@@ -1,8 +1,21 @@
+import { GENERAL_AREA, type Extraction } from "./ai/schema";
 import { formatBytes } from "./photos";
 import type { CallRecord, Finding } from "./store";
 
-/** Fields the capture step fills in for one note. */
-const FIELDS_PER_NOTE = 5;
+/**
+ * Fields the model filled in from one note. A size it left null and an area
+ * it could not name are not counted; the water flag is always a decision.
+ */
+function filledFields(extraction: Extraction): number {
+  const area = extraction.area.trim().toLowerCase();
+  return (
+    (area !== "" && area !== GENERAL_AREA.toLowerCase() ? 1 : 0) +
+    (extraction.item.trim() ? 1 : 0) +
+    (extraction.issue.trim() ? 1 : 0) +
+    (extraction.size_cm !== null ? 1 : 0) +
+    1
+  );
+}
 
 export interface Kpi {
   key: "offline-fields" | "offline-upload" | "cloud-calls" | "device-latency";
@@ -34,11 +47,19 @@ function wasOffline(record: CallRecord): boolean {
  * the routing log stored on this device. Nothing here is estimated.
  */
 export function computeKpis(findings: Finding[], calls: CallRecord[]): Kpi[] {
-  const offlineNotes = findings.filter(
+  const offlineFindings = findings.filter(
     (finding) =>
       finding.extraction &&
       finding.extractedOffline &&
       finding.extractionTier === "on_device",
+  );
+  const offlineNotes = offlineFindings.length;
+  const offlineFields = offlineFindings.reduce(
+    (sum, finding) => sum + filledFields(finding.extraction!),
+    0,
+  );
+  const simulatedNotes = offlineFindings.filter(
+    (finding) => finding.extractedSimulated,
   ).length;
 
   const cloudWhileOffline = calls.filter(
@@ -49,6 +70,11 @@ export function computeKpis(findings: Finding[], calls: CallRecord[]): Kpi[] {
     0,
   );
   const offlineCalls = calls.filter(wasOffline).length;
+  const simulatedCalls = calls.filter(
+    (record) => record.simulatedOffline && record.browserOnline,
+  ).length;
+  const simulatedNote = (count: number): string =>
+    count === 0 ? "" : ` (${count} with offline simulated)`;
 
   const cloudPolish = calls.filter(
     (record) => record.tier === "in_cloud" && record.step === "polish",
@@ -66,11 +92,11 @@ export function computeKpis(findings: Finding[], calls: CallRecord[]): Kpi[] {
     {
       key: "offline-fields",
       label: "Fields extracted offline",
-      value: String(offlineNotes * FIELDS_PER_NOTE),
+      value: String(offlineFields),
       detail:
         offlineNotes === 0
           ? "No note structured offline yet"
-          : `From ${plural(offlineNotes, "note")}, on device`,
+          : `From ${plural(offlineNotes, "note")}, on device${simulatedNote(simulatedNotes)}`,
     },
     {
       key: "offline-upload",
@@ -79,7 +105,7 @@ export function computeKpis(findings: Finding[], calls: CallRecord[]): Kpi[] {
       detail:
         offlineCalls === 0
           ? "No model calls made offline yet"
-          : `Prompt bytes, over ${plural(offlineCalls, "offline call")}`,
+          : `Prompt bytes, over ${plural(offlineCalls, "offline call")}${simulatedNote(simulatedCalls)}`,
     },
     {
       key: "cloud-calls",

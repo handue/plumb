@@ -47,7 +47,12 @@ export async function scaleFile(file: Blob): Promise<ScaledImage> {
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
   } catch {
-    throw new Error("That file could not be read as an image.");
+    const kind = file.type.startsWith("image/")
+      ? `${file.type.slice(6).toUpperCase()} files`
+      : "That file";
+    throw new Error(
+      `${kind} could not be opened by Chrome. Use a JPEG, PNG or WebP photo.`,
+    );
   }
   try {
     return await encode(bitmap, bitmap.width, bitmap.height);
@@ -58,6 +63,14 @@ export async function scaleFile(file: Blob): Promise<ScaledImage> {
 
 /** Captures the current frame of a playing camera preview. */
 export function scaleVideoFrame(video: HTMLVideoElement): Promise<ScaledImage> {
+  if (
+    video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA ||
+    video.videoWidth === 0
+  ) {
+    return Promise.reject(
+      new Error("The camera is still starting. Try again in a moment."),
+    );
+  }
   return encode(video, video.videoWidth, video.videoHeight);
 }
 

@@ -38,6 +38,7 @@ import {
   loadFindings,
   loadPhotos,
   loadVisit,
+  onStoreBlocked,
   saveArea,
   saveFinding,
   savePhoto,
@@ -130,7 +131,6 @@ const SIMULATE_KEY = "plumb.simulateOffline";
 const DEFAULT_PRESET_ID = "warehouse";
 const TIER_LABELS = { on_device: "on device", in_cloud: "in cloud" } as const;
 const LOG_ROWS = 60;
-const NEW_AREA_VALUE = "__new";
 
 let visit: Visit | null = null;
 let areas: Area[] = [];
@@ -147,9 +147,15 @@ let availability = "missing";
 let downloading = false;
 /** The finding removed last, kept so the delete can be undone. */
 let lastDeleted: Finding | null = null;
-/** Findings whose card or polish has not been shown yet, for one-off motion. */
-const shownCards = new Set<string>();
-const freshlyPolished = new Set<string>();
+/**
+ * When each card first appeared and when each polish landed. The feed is
+ * rebuilt on every render, so a rebuilt card continues its animation from
+ * these times instead of restarting or losing it.
+ */
+const cardShownAt = new Map<string, number>();
+const polishedAt = new Map<string, number>();
+const CARD_IN_MS = 320;
+const POLISH_IN_MS = 620;
 /** What the capture line says when it has nothing more specific to say. */
 let deviceNote = "";
 
@@ -221,17 +227,32 @@ function explain(error: string | null, fallback: string): string {
 
 /** Key that decides whether two area names are the same place. */
 function areaKey(name: string): string {
-  return name
+  const key = name
+    .normalize("NFKC")
     .toLowerCase()
     .replace(/^the\s+/, "")
-    .replace(/[^a-z0-9]+/g, "");
+    // A sign or decimal point before a digit tells "Level -1" from "Level 1".
+    .replace(/[-.](?=\d)/g, "\u0001")
+    .replace(/[^\p{L}\p{N}\u0001]+/gu, "");
+  // A name made only of symbols still has to match itself.
+  return key || name.trim().toLowerCase();
 }
+
+const AREA_NAME_LIMIT = 40;
 
 /** Tidies a typed or extracted area name for display. */
 function cleanAreaName(raw: string): string {
-  const name = raw.replace(/\s+/g, " ").trim().slice(0, 40);
+  let name = raw.replace(/\s+/g, " ").trim();
+  if (name.length > AREA_NAME_LIMIT) {
+    const cut = name.lastIndexOf(" ", AREA_NAME_LIMIT);
+    name = name.slice(0, cut > 0 ? cut : AREA_NAME_LIMIT).trim();
+  }
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
+
+/** What a small model writes when it has no area to give. */
+const NO_AREA =
+  /^(none|null|n\/?a|unknown|unspecified|not (specified|stated|given|mentioned))$/i;
 
 function findArea(name: string): Area | undefined {
   const key = areaKey(name);
@@ -252,7 +273,8 @@ async function createArea(name: string, origin: AreaOrigin): Promise<Area> {
 
 /** The area with this name, created if the site has none like it yet. */
 async function ensureArea(raw: string, origin: AreaOrigin): Promise<Area> {
-  const name = cleanAreaName(raw) || GENERAL_AREA;
+  let name = cleanAreaName(raw);
+  if (name === "" || NO_AREA.test(name)) name = GENERAL_AREA;
   return findArea(name) ?? createArea(name, origin);
 }
 
@@ -273,6 +295,20 @@ async function addBlankArea(): Promise<Area> {
   return createArea(name, "manual");
 }
 
+/**
+ * The cloud sentence was written for the area the finding was in. Once the
+ * finding is filed elsewhere it goes back to draft and is polished again.
+ */
+function refile(finding: Finding, areaId: string): void {
+  finding.areaId = areaId;
+  finding.areaSetByUser = true;
+  if (finding.polish) {
+    finding.polish = null;
+    finding.polishError = null;
+    finding.status = "draft";
+  }
+}
+
 async function renameArea(areaId: string, raw: string): Promise<void> {
   const area = areaById(areaId);
   if (!area) return;
@@ -285,15 +321,13 @@ async function renameArea(areaId: string, raw: string): Promise<void> {
   if (twin && twin !== area) {
     // Two tiles for one place: fold this one into the other.
     const moved = findings.filter((finding) => finding.areaId === area.id);
-    for (const finding of moved) {
-      finding.areaId = twin.id;
-      finding.areaSetByUser = true;
-    }
+    for (const finding of moved) refile(finding, twin.id);
     areas = areas.filter((other) => other !== area);
     await Promise.all([...moved.map(saveFinding), deleteArea(area.id)]);
     showFeedStatus(
       `Merged into ${twin.name}: ${plural(moved.length, "finding")} moved.`,
     );
+    sync(false);
   } else {
     area.name = name;
     await saveArea(area);
@@ -311,10 +345,10 @@ async function removeArea(areaId: string): Promise<void> {
 async function moveFinding(findingId: string, areaId: string): Promise<void> {
   const finding = findingById(findingId);
   if (!finding || !areaById(areaId) || finding.areaId === areaId) return;
-  finding.areaId = areaId;
-  finding.areaSetByUser = true;
+  refile(finding, areaId);
   await saveFinding(finding);
   render();
+  sync(false);
 }
 
 addAreaButton.addEventListener("click", () => {
@@ -434,6 +468,8 @@ async function structure(id: string): Promise<void> {
       current.extraction = parseExtraction(record.text);
       current.extractionTier = record.source;
       current.extractedOffline = offline;
+      // Offline only because of the demo control, not for real.
+      current.extractedSimulated = offline && simulatedOffline && record.online;
       current.status = "draft";
     } catch {
       current.status = "queued";
@@ -447,6 +483,12 @@ async function structure(id: string): Promise<void> {
   if (current.extraction && !current.areaSetByUser) {
     const area = await ensureArea(current.extraction.area, "note");
     current.areaId = area.id;
+  }
+  // The finding may have been deleted, or the visit cleared, meanwhile.
+  if (started !== generation) return;
+  if (findingById(id) !== current) {
+    render();
+    return;
   }
   await saveFinding(current);
 
@@ -469,11 +511,14 @@ async function polish(id: string): Promise<void> {
   finding.polishError = null;
   render();
 
+  const areaAtStart = finding.areaId;
+  const areaName = areaById(finding.areaId)?.name ?? finding.extraction.area;
   const prompt = [
     `Visit type: ${visit.typeLabel}`,
-    `Area: ${areaById(finding.areaId)?.name ?? finding.extraction.area}`,
+    `Area: ${areaName}`,
     `Inspector's note: ${finding.note}`,
-    `Extracted finding: ${JSON.stringify(finding.extraction)}`,
+    // The area the finding is filed under, which may not be the extracted one.
+    `Extracted finding: ${JSON.stringify({ ...finding.extraction, area: areaName })}`,
   ].join("\n");
 
   const started = generation;
@@ -487,6 +532,13 @@ async function polish(id: string): Promise<void> {
   }
 
   current.status = "draft";
+  if (current.areaId !== areaAtStart) {
+    // Refiled while the call was in flight: the sentence is for the old area.
+    await saveFinding(current);
+    render();
+    sync(false);
+    return;
+  }
   if (!isOnline()) {
     // The app went offline while the call was in flight. The call is in the
     // log, but its result is not applied while the app says it is offline.
@@ -501,7 +553,7 @@ async function polish(id: string): Promise<void> {
     try {
       current.polish = parsePolish(record.text);
       current.status = "polished";
-      freshlyPolished.add(current.id);
+      polishedAt.set(current.id, performance.now());
     } catch {
       current.polishError = "The cloud answered, but not in the expected fields.";
     }
@@ -549,6 +601,7 @@ async function addFinding(note: string): Promise<void> {
     extraction: null,
     extractionTier: null,
     extractedOffline: false,
+    extractedSimulated: false,
     captureError: null,
     areaId: null,
     areaSetByUser: false,
@@ -573,7 +626,16 @@ captureForm.addEventListener("submit", (event) => {
     return;
   }
   noteInput.value = "";
-  void addFinding(note);
+  void addFinding(note).catch((cause: unknown) => {
+    // The note never reached storage: hand it back instead of losing it.
+    if (noteInput.value.trim() === "") noteInput.value = note;
+    showCaptureStatus(
+      isQuotaError(cause)
+        ? "This device is out of storage, so the note was not saved. Remove photos or findings you no longer need, then try again."
+        : `The note was not saved: ${cause instanceof Error ? cause.message : String(cause)}`,
+    );
+    noteInput.focus();
+  });
 });
 
 // -------------------------------------------------------------------- photos
@@ -581,7 +643,18 @@ captureForm.addEventListener("submit", (event) => {
 const QUOTA_MESSAGE =
   "This device is out of storage, so the photo was not saved. Remove photos or findings you no longer need, then try again.";
 
-async function storePhoto(findingId: string, image: ScaledImage): Promise<Photo> {
+const FINDING_GONE = "The finding was removed, so the photo was not kept.";
+
+/** `startedIn` is the visit generation when the photo was picked or taken. */
+async function storePhoto(
+  findingId: string,
+  image: ScaledImage,
+  startedIn: number,
+): Promise<Photo> {
+  const wanted = (): boolean =>
+    generation === startedIn &&
+    (findingById(findingId) !== undefined || lastDeleted?.id === findingId);
+  if (!wanted()) throw new Error(FINDING_GONE);
   const photo: Photo = {
     id: crypto.randomUUID(),
     findingId,
@@ -591,6 +664,10 @@ async function storePhoto(findingId: string, image: ScaledImage): Promise<Photo>
     createdAt: new Date().toISOString(),
   };
   await savePhoto(photo);
+  if (!wanted()) {
+    await deletePhoto(photo.id).catch(() => undefined);
+    throw new Error(FINDING_GONE);
+  }
   photos.set(findingId, [...photosOf(findingId), photo]);
   return photo;
 }
@@ -604,16 +681,19 @@ function photoProblem(cause: unknown): string {
 async function attachFiles(findingId: string, files: File[]): Promise<void> {
   const finding = findingById(findingId);
   if (!finding || files.length === 0) return;
+  const startedIn = generation;
   let saved = 0;
   let problem = "";
   for (const file of files) {
     try {
-      await storePhoto(findingId, await scaleFile(file));
+      await storePhoto(findingId, await scaleFile(file), startedIn);
       saved += 1;
     } catch (cause) {
       problem = photoProblem(cause);
       if (isQuotaError(cause)) break;
     }
+    // The visit was cleared while a file was being scaled.
+    if (generation !== startedIn) return;
   }
   const done =
     saved > 0
@@ -633,8 +713,26 @@ photoInput.addEventListener("change", () => {
 });
 
 let cameraStream: MediaStream | null = null;
+/** Bumped on every open and close, so a late permission answer is dropped. */
+let cameraSession = 0;
+/** Where keyboard focus goes back to when a dialog closes. */
+let returnFocusKeys: string[] = [];
+
+function restoreFeedFocus(): void {
+  for (const key of returnFocusKeys) {
+    const target = feed.querySelector<HTMLElement>(
+      `[data-focus-key="${CSS.escape(key)}"]`,
+    );
+    if (target) {
+      target.focus();
+      break;
+    }
+  }
+  returnFocusKeys = [];
+}
 
 function stopCamera(): void {
+  cameraSession += 1;
   cameraStream?.getTracks().forEach((track) => track.stop());
   cameraStream = null;
   cameraVideo.srcObject = null;
@@ -644,9 +742,11 @@ async function openCamera(findingId: string): Promise<void> {
   const finding = findingById(findingId);
   if (!finding) return;
   photoTargetId = findingId;
+  returnFocusKeys = [`camera:${findingId}`, `card:${findingId}`];
   cameraShoot.disabled = true;
   cameraStatus.textContent = "Starting the camera.";
   cameraDialog.showModal();
+  const session = ++cameraSession;
 
   if (!navigator.mediaDevices?.getUserMedia) {
     cameraStatus.textContent =
@@ -657,16 +757,26 @@ async function openCamera(findingId: string): Promise<void> {
     const stream = await navigator.mediaDevices.getUserMedia({
       video: { facingMode: "environment", width: { ideal: 1920 } },
     });
-    // The dialog may have been closed while the permission prompt was open.
-    if (!cameraDialog.open) {
+    // The dialog may have been closed, or reopened, while the permission
+    // prompt was up.
+    if (session !== cameraSession || !cameraDialog.open) {
       stream.getTracks().forEach((track) => track.stop());
       return;
     }
     cameraStream = stream;
     cameraVideo.srcObject = stream;
-    cameraShoot.disabled = false;
-    cameraStatus.textContent = `Photos are saved on this device for finding ${finding.seq}.`;
+    // The button waits for the first frame, so it never captures a blank.
+    cameraVideo.addEventListener(
+      "loadeddata",
+      () => {
+        if (cameraStream !== stream) return;
+        cameraShoot.disabled = false;
+        cameraStatus.textContent = `Photos are saved on this device for finding ${finding.seq}.`;
+      },
+      { once: true },
+    );
   } catch (cause) {
+    if (session !== cameraSession) return;
     const name = cause instanceof DOMException ? cause.name : "";
     cameraStatus.textContent =
       name === "NotAllowedError"
@@ -681,10 +791,12 @@ cameraShoot.addEventListener("click", () => {
   const findingId = photoTargetId;
   if (!findingId || !findingById(findingId)) return;
   cameraShoot.disabled = true;
+  const startedIn = generation;
   void scaleVideoFrame(cameraVideo)
-    .then((image) => storePhoto(findingId, image))
+    .then((image) => storePhoto(findingId, image, startedIn))
     .then(
       () => {
+        if (generation !== startedIn) return;
         cameraStatus.textContent = `Photo saved. ${plural(photosOf(findingId).length, "photo")} on this finding.`;
         render();
       },
@@ -693,17 +805,27 @@ cameraShoot.addEventListener("click", () => {
       },
     )
     .finally(() => {
-      cameraShoot.disabled = cameraStream === null;
+      cameraShoot.disabled =
+        cameraStream === null ||
+        cameraVideo.readyState < HTMLMediaElement.HAVE_CURRENT_DATA;
     });
 });
 cameraClose.addEventListener("click", () => cameraDialog.close());
-cameraDialog.addEventListener("close", stopCamera);
+cameraDialog.addEventListener("close", () => {
+  stopCamera();
+  restoreFeedFocus();
+});
 
 /** The photo shown in the viewer. */
 let viewedPhoto: Photo | null = null;
 
 function openPhoto(photo: Photo, finding: Finding, index: number): void {
   viewedPhoto = photo;
+  returnFocusKeys = [
+    `photo:${photo.id}`,
+    `photo-add:${finding.id}`,
+    `card:${finding.id}`,
+  ];
   photoTitle.textContent = `Finding ${finding.seq}, photo ${index + 1}`;
   const image = el("img", "photo-large");
   image.src = photoUrl(photo);
@@ -716,12 +838,15 @@ function openPhoto(photo: Photo, finding: Finding, index: number): void {
 
 photoClose.addEventListener("click", () => photoDialog.close());
 photoDialog.addEventListener("close", () => {
+  // A removal re-renders first, then restores focus itself.
+  if (viewedPhoto) restoreFeedFocus();
   viewedPhoto = null;
   photoFrame.replaceChildren();
 });
 photoRemove.addEventListener("click", () => {
   const photo = viewedPhoto;
   if (!photo) return;
+  viewedPhoto = null;
   photoDialog.close();
   photos.set(
     photo.findingId,
@@ -731,15 +856,20 @@ photoRemove.addEventListener("click", () => {
   void deletePhoto(photo.id).then(() => {
     showFeedStatus("Photo removed.");
     render();
+    restoreFeedFocus();
   });
 });
 
 // ------------------------------------------------------------------- network
 
 function describeNetwork(): string {
-  if (simulated) return "Offline (simulated): on-device only";
-  if (!navigator.onLine) return "Offline: on-device only";
-  return "Online: cloud polish on";
+  if (isOnline()) {
+    return configured ? "Online: cloud polish on" : "Online: cloud not configured";
+  }
+  const label = simulated && navigator.onLine ? "Offline (simulated)" : "Offline";
+  return availability === "available" && configured
+    ? `${label}: on-device only`
+    : `${label}: notes saved, not structured`;
 }
 
 let lostTimer: ReturnType<typeof setTimeout> | undefined;
@@ -762,10 +892,12 @@ function applyNetwork(initial: boolean): void {
     sync(true);
   } else if (before === "online" && !online) {
     clearTimeout(lostTimer);
+    // The demo control is not a lost signal, and the plate says so.
+    const lead = simulated && navigator.onLine ? "Offline simulated." : "Signal lost.";
     lostPlate.textContent =
-      availability === "available"
-        ? "Signal lost. Keep working: notes are structured on this device."
-        : "Signal lost. Keep working: notes are saved on this device.";
+      availability === "available" && configured
+        ? `${lead} Keep working: notes are structured on this device.`
+        : `${lead} Keep working: notes are saved on this device.`;
     lostTimer = setTimeout(() => {
       lostPlate.textContent = "";
     }, 6000);
@@ -786,6 +918,7 @@ window.addEventListener("offline", () => applyNetwork(false));
 
 async function refreshAvailability(): Promise<void> {
   availability = await onDeviceAvailability();
+  netText.textContent = describeNetwork();
   renderNotice();
 }
 
@@ -943,7 +1076,10 @@ function actionButton(
   return button;
 }
 
-/** A select that files the finding under another area, or a new one. */
+/** Set when the card holding a focused Area dropdown may be rebuilt. */
+let releaseHeldCard = false;
+
+/** A select that files the finding under another area. */
 function areaSelect(finding: Finding): HTMLLabelElement {
   const label = el("label", "area-select");
   label.append(el("span", undefined, "Area"));
@@ -959,20 +1095,20 @@ function areaSelect(finding: Finding): HTMLLabelElement {
     option.value = area.id;
     select.append(option);
   }
-  const fresh = el("option", undefined, "New area…");
-  fresh.value = NEW_AREA_VALUE;
-  select.append(fresh);
   select.value = finding.areaId ?? "";
   select.addEventListener("click", (event) => event.stopPropagation());
   select.addEventListener("change", () => {
-    if (select.value === NEW_AREA_VALUE) {
-      void addBlankArea().then(async (area) => {
-        await moveFinding(finding.id, area.id);
-        map.editName(area.id);
-      });
-    } else if (select.value) {
-      void moveFinding(finding.id, select.value);
-    }
+    releaseHeldCard = true;
+    if (select.value) void moveFinding(finding.id, select.value);
+    else renderFeed();
+  });
+  // A card kept alive for an open dropdown is stale: rebuild it on leaving.
+  select.addEventListener("blur", () => {
+    queueMicrotask(() => {
+      if (!select.isConnected) return;
+      releaseHeldCard = true;
+      renderFeed();
+    });
   });
   label.append(select);
   return label;
@@ -984,9 +1120,12 @@ function renderCard(finding: Finding): HTMLLIElement {
   card.dataset.status = finding.status;
   if (finding.polish) card.dataset.severity = finding.polish.severity.toLowerCase();
   if (finding.id === selectedId) card.classList.add("is-selected");
-  if (!shownCards.has(finding.id)) {
+  const now = performance.now();
+  if (!cardShownAt.has(finding.id)) cardShownAt.set(finding.id, now);
+  const cardAge = now - (cardShownAt.get(finding.id) ?? now);
+  if (cardAge < CARD_IN_MS) {
     card.classList.add("is-new");
-    shownCards.add(finding.id);
+    card.style.animationDelay = `-${Math.round(cardAge)}ms`;
   }
   card.addEventListener("click", () => {
     if (selectedId === finding.id) return;
@@ -1019,7 +1158,11 @@ function renderCard(finding: Finding): HTMLLIElement {
 
   if (finding.polish) {
     const body = el("div", "card-polish");
-    if (freshlyPolished.has(finding.id)) body.classList.add("is-fresh");
+    const polishAge = now - (polishedAt.get(finding.id) ?? -POLISH_IN_MS);
+    if (polishAge < POLISH_IN_MS) {
+      body.classList.add("is-fresh");
+      body.style.animationDelay = `-${Math.round(polishAge)}ms`;
+    }
     body.append(el("p", "card-sentence", finding.polish.sentence));
     const flags: string[] = [];
     if (finding.polish.safety_flag) flags.push("Safety concern");
@@ -1088,7 +1231,7 @@ function renderCard(finding: Finding): HTMLLIElement {
   }
   if (finding.extractionTier) {
     addStep(
-      `Structured ${TIER_LABELS[finding.extractionTier]}${finding.extractedOffline ? ", offline" : ""}`,
+      `Structured ${TIER_LABELS[finding.extractionTier]}${finding.extractedOffline ? (finding.extractedSimulated ? ", offline (simulated)" : ", offline") : ""}`,
       finding.extractionTier,
     );
   }
@@ -1118,6 +1261,12 @@ function renderCard(finding: Finding): HTMLLIElement {
   const actions = el("div", "card-actions");
   actions.append(areaSelect(finding));
   actions.append(
+    actionButton("New area", `area-new:${finding.id}`, () => {
+      void addBlankArea().then(async (created) => {
+        await moveFinding(finding.id, created.id);
+        map.editName(created.id);
+      });
+    }),
     actionButton("Add photo", `photo-add:${finding.id}`, () => {
       photoTargetId = finding.id;
       photoInput.click();
@@ -1150,11 +1299,23 @@ function renderFeed(): void {
   const focusKey = (document.activeElement as HTMLElement | null)?.dataset
     ?.focusKey;
 
-  const newestFirst = [...findings].sort((a, b) => b.seq - a.seq);
-  feed.replaceChildren(...newestFirst.map(renderCard));
-  freshlyPolished.clear();
+  // A model call landing must not close an Area dropdown that is open: the
+  // card that holds it is kept as it is until the dropdown is left.
+  const active = document.activeElement;
+  const held =
+    !releaseHeldCard && active instanceof HTMLSelectElement && feed.contains(active)
+      ? active.closest<HTMLLIElement>("li.card")
+      : null;
+  releaseHeldCard = false;
 
-  if (focusKey && !focusKey.startsWith("pin:")) {
+  const newestFirst = [...findings].sort((a, b) => b.seq - a.seq);
+  feed.replaceChildren(
+    ...newestFirst.map((finding) =>
+      held && held.dataset.id === finding.id ? held : renderCard(finding),
+    ),
+  );
+
+  if (!held && focusKey && !focusKey.startsWith("pin:")) {
     feed
       .querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)
       ?.focus();
@@ -1163,19 +1324,39 @@ function renderFeed(): void {
   const total = findings.length;
   const reviewed = findings.filter((finding) => finding.polish).length;
   feedEmpty.hidden = total > 0;
-  feedCount.textContent =
+  const countText =
     total === 0 ? "" : `${total} captured, ${reviewed} polished in cloud`;
+  if (feedCount.textContent !== countText) feedCount.textContent = countText;
 
   // The queue is everything the cloud has not polished yet.
   const waiting = total - reviewed;
+  const working =
+    pendingSteps.size > 0 ||
+    findings.some(
+      (finding) => finding.status === "structuring" || finding.status === "polishing",
+    );
+  const failed = findings.filter(
+    (finding) => !finding.polish && (finding.captureError ?? finding.polishError),
+  ).length;
+  let state = "waiting";
+  let queue: string;
+  if (waiting === 0) {
+    state = "done";
+    queue = `All ${plural(total, "finding")} polished`;
+  } else if (!isOnline()) {
+    queue = `${waiting} in queue for cloud`;
+  } else if (working) {
+    state = "syncing";
+    queue = `${waiting} in queue, syncing`;
+  } else if (!configured) {
+    queue = `${waiting} not polished: cloud not configured`;
+  } else {
+    queue = `${waiting} not polished${failed > 0 ? `, ${failed} failed` : ""}`;
+  }
   queueText.hidden = total === 0;
-  queueText.dataset.state = waiting === 0 ? "done" : isOnline() ? "syncing" : "waiting";
-  queueText.textContent =
-    waiting === 0
-      ? `All ${plural(total, "finding")} polished`
-      : isOnline()
-        ? `${waiting} in queue, syncing`
-        : `${waiting} in queue for cloud`;
+  queueText.dataset.state = state;
+  // A live region: only touch it when the words change.
+  if (queueText.textContent !== queue) queueText.textContent = queue;
 }
 
 function networkLabel(record: CallRecord): string {
@@ -1315,6 +1496,7 @@ async function removeFinding(id: string): Promise<void> {
 async function undoDelete(): Promise<void> {
   const finding = lastDeleted;
   if (!finding) return;
+  const startedIn = generation;
   lastDeleted = null;
   // A step that was in flight when the finding was deleted never landed.
   if (finding.status === "structuring") finding.status = "queued";
@@ -1324,7 +1506,13 @@ async function undoDelete(): Promise<void> {
   if (finding.areaId === null && finding.extraction) {
     finding.areaId = (await ensureArea(finding.extraction.area, "note")).id;
   }
+  if (startedIn !== generation) return;
   await saveFinding(finding);
+  if (startedIn !== generation) {
+    // The visit was cleared during the write: take the row back out.
+    await deleteFinding(finding.id);
+    return;
+  }
   findings.push(finding);
   findings.sort((a, b) => a.seq - b.seq);
   showFeedStatus(`Finding ${finding.seq} restored.`);
@@ -1408,6 +1596,8 @@ setupView.addEventListener("submit", (event) => {
   };
   void saveVisit(next).then(() => {
     visit = next;
+    // A leftover #report would open the empty report instead of capture.
+    if (location.hash) history.replaceState(null, "", location.pathname);
     setupSite.value = "";
     setupCustomLabel.value = "";
     renderExamples();
@@ -1428,6 +1618,11 @@ printButton.addEventListener("click", () => window.print());
 // Printing from the capture view still prints the report.
 window.addEventListener("beforeprint", drawReport);
 window.addEventListener("hashchange", renderView);
+
+onStoreBlocked(() => {
+  setupStatus.textContent =
+    "Plumb is open in another tab with an older version. Close that tab, then reload this one.";
+});
 
 async function start(): Promise<void> {
   applyNetwork(true);
@@ -1461,7 +1656,7 @@ async function start(): Promise<void> {
   for (const finding of findings) {
     if (finding.status === "structuring") finding.status = "queued";
     if (finding.status === "polishing") finding.status = "draft";
-    shownCards.add(finding.id);
+    cardShownAt.set(finding.id, -CARD_IN_MS);
   }
 
   renderExamples();

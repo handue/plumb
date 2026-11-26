@@ -61,10 +61,12 @@
       <form id="setup-view" class="setup" autocomplete="off" hidden>
         <h1>Start a site visit</h1>
         <p class="setup-lead">
-          Plumb works with no connection. Type short notes as you walk the
-          site. Each note is turned into fields on this device, and areas of
-          the site appear as your notes mention them. When you are back
-          online, the cloud writes the report wording and suggests a severity.
+          Plumb is built to work with no connection. Type short notes as you
+          walk the site. Each note is turned into fields on this device when
+          Chrome's on-device model is available, otherwise in the cloud once
+          you are online, and areas of the site appear as your notes mention
+          them. When you are back online, the cloud writes the report wording
+          and suggests a severity.
         </p>
 
         <label class="setup-field" for="setup-site">Site name</label>
@@ -201,7 +203,7 @@
       </div>
     </main>
 
-    <input id="photo-input" type="file" accept="image/*" capture="environment" multiple hidden />
+    <input id="photo-input" type="file" accept="image/jpeg,image/png,image/webp,image/avif,image/gif" capture="environment" multiple hidden />
 
     <dialog id="clear-dialog" class="dialog" aria-labelledby="clear-title">
       <form method="dialog">

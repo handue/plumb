@@ -37,6 +37,8 @@ const ORIGIN_BADGES: Record<AreaOrigin, string> = {
 };
 
 const DRAG_TYPE = "application/x-plumb-finding";
+/** Length of the pin drop animation in app.css. */
+const PIN_DROP_MS = 420;
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -65,8 +67,8 @@ interface TileParts {
  */
 export function createMap(host: HTMLElement, handlers: MapHandlers): MapView {
   const tiles = new Map<string, TileParts>();
-  /** Pins drawn before, so only a new pin plays the drop. */
-  const drawnPins = new Set<string>();
+  /** When each pin was first drawn, so a rebuilt pin continues its drop. */
+  const drawnPins = new Map<string, number>();
   let firstUpdate = true;
 
   function buildTile(area: Area): TileParts {
@@ -79,7 +81,6 @@ export function createMap(host: HTMLElement, handlers: MapHandlers): MapView {
     name.maxLength = 40;
     name.spellcheck = false;
     name.autocomplete = "off";
-    name.setAttribute("aria-label", "Area name");
     name.addEventListener("change", () => handlers.onRename(area.id, name.value));
     // After a rename the stored name may differ from what was typed.
     name.addEventListener("blur", () => {
@@ -129,7 +130,7 @@ export function createMap(host: HTMLElement, handlers: MapHandlers): MapView {
     return { root, name, badge, remove, pins, empty };
   }
 
-  function buildPin(pin: MapPin, selected: boolean, isNew: boolean): HTMLLIElement {
+  function buildPin(pin: MapPin, selected: boolean, age: number): HTMLLIElement {
     const item = el("li");
     const button = el("button", "pin");
     button.type = "button";
@@ -138,7 +139,10 @@ export function createMap(host: HTMLElement, handlers: MapHandlers): MapView {
     button.dataset.state = pin.state;
     button.dataset.focusKey = `pin:${pin.id}`;
     if (selected) button.classList.add("is-selected");
-    if (isNew) button.classList.add("is-new");
+    if (age < PIN_DROP_MS) {
+      button.classList.add("is-new");
+      button.style.animationDelay = `-${Math.round(age)}ms`;
+    }
     button.setAttribute("aria-label", `Finding ${pin.seq}: ${pin.label}`);
     button.setAttribute("aria-pressed", String(selected));
     button.append(
@@ -156,17 +160,31 @@ export function createMap(host: HTMLElement, handlers: MapHandlers): MapView {
 
   return {
     update(next, selectedId) {
-      const seen = new Set<string>();
+      const now = performance.now();
+      // Drop stale tiles first, so the rest are not re-inserted around them.
+      const nextIds = new Set(next.map((tile) => tile.area.id));
+      for (const [id, parts] of tiles) {
+        if (nextIds.has(id)) continue;
+        parts.root.remove();
+        tiles.delete(id);
+      }
       const focusKey = (document.activeElement as HTMLElement | null)?.dataset
         ?.focusKey;
 
       next.forEach(({ area, pins, heat }, index) => {
-        seen.add(area.id);
         let parts = tiles.get(area.id);
         if (!parts) {
-          parts = buildTile(area);
-          tiles.set(area.id, parts);
-          if (!firstUpdate) parts.root.classList.add("is-new");
+          const built = buildTile(area);
+          parts = built;
+          tiles.set(area.id, built);
+          if (!firstUpdate) {
+            built.root.classList.add("is-new");
+            built.root.addEventListener(
+              "animationend",
+              () => built.root.classList.remove("is-new"),
+              { once: true },
+            );
+          }
         }
         // Keep DOM order in step with the given order.
         if (host.children[index] !== parts.root) {
@@ -176,6 +194,9 @@ export function createMap(host: HTMLElement, handlers: MapHandlers): MapView {
         parts.name.dataset.saved = area.name;
         if (document.activeElement !== parts.name) parts.name.value = area.name;
 
+        parts.root.setAttribute("aria-label", `Area ${area.name}`);
+        parts.name.setAttribute("aria-label", `Name of area ${area.name}`);
+        parts.pins.setAttribute("aria-label", `Findings in ${area.name}`);
         parts.badge.textContent = ORIGIN_BADGES[area.origin];
         parts.badge.hidden = ORIGIN_BADGES[area.origin] === "";
         parts.remove.hidden = pins.length > 0;
@@ -186,22 +207,19 @@ export function createMap(host: HTMLElement, handlers: MapHandlers): MapView {
         else delete parts.root.dataset.heat;
 
         parts.pins.replaceChildren(
-          ...pins.map((pin) =>
-            buildPin(
+          ...pins.map((pin) => {
+            if (!drawnPins.has(pin.id)) {
+              // Pins present at load are old; they do not drop.
+              drawnPins.set(pin.id, firstUpdate ? -PIN_DROP_MS : now);
+            }
+            return buildPin(
               pin,
               pin.id === selectedId,
-              !firstUpdate && !drawnPins.has(pin.id),
-            ),
-          ),
+              now - (drawnPins.get(pin.id) ?? now),
+            );
+          }),
         );
-        for (const pin of pins) drawnPins.add(pin.id);
       });
-
-      for (const [id, parts] of tiles) {
-        if (seen.has(id)) continue;
-        parts.root.remove();
-        tiles.delete(id);
-      }
 
       if (focusKey?.startsWith("pin:")) {
         host

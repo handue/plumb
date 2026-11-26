@@ -28,7 +28,7 @@ export const EXTRACTION_SCHEMA = {
   additionalProperties: false,
 };
 
-export const EXTRACTION_INSTRUCTIONS = `You extract structured fields from a site inspector's short note. area is the place on the site the note is about, two or three words at most, in title case. If the place matches one of the known areas, use that exact name. If the note names no place, use "${GENERAL_AREA}". item is the thing inspected. issue is what is wrong with it. Convert feet and inches to centimeters (1 ft = 30.5 cm, 1 inch = 2.54 cm). size_cm is null when no size is stated. water_related is true only if the note mentions water, leaks, damp, wet, mold or dripping. Output JSON only.`;
+export const EXTRACTION_INSTRUCTIONS = `You extract structured fields from a site inspector's short note. area is the place on the site the note is about, two or three words at most. If the place matches one of the known areas, copy that name exactly; otherwise use the words from the note. If the note names no place, use "${GENERAL_AREA}". item is the thing inspected. issue is what is wrong with it. Convert feet and inches to centimeters (1 ft = 30.5 cm, 1 inch = 2.54 cm). size_cm is null when no size is stated. water_related is true only if the note mentions water, leaks, damp, wet, mold or dripping. Output JSON only.`;
 
 /** The per-call prompt: visit context first, then the note. */
 export function extractionPrompt(
@@ -67,7 +67,7 @@ export const POLISH_SCHEMA = {
   additionalProperties: false,
 };
 
-export const POLISH_INSTRUCTIONS = `You are a site inspection report editor. You receive the visit type, one finding as JSON and the inspector's original note. Write one or two clear sentences for the report. Assign a severity: High for safety hazards or active water damage, Moderate for defects that need repair soon, Low for cosmetic issues. Set water_flag for leaks, damp or mold, and safety_flag for electrical, fire, structural or fall hazards. Do not invent details that are not in the note.`;
+export const POLISH_INSTRUCTIONS = `You are a site inspection report editor. You receive the visit type, one finding as JSON and the inspector's original note. Write one or two clear sentences for the report. Assign a severity: High for safety hazards or active water damage, Moderate for defects that need repair soon, Low for cosmetic issues. Set water_flag for leaks, damp or mold, and safety_flag for electrical, fire, structural or fall hazards. Use the given Area as the location and do not name a different one. Do not invent details that are not in the note.`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

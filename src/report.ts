@@ -70,7 +70,11 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
     "paper-meta",
     [
       visit.typeLabel,
-      new Date().toLocaleDateString("en-US", { dateStyle: "long" }),
+      ...(Number.isNaN(Date.parse(visit.startedAt))
+        ? []
+        : [
+            `visit started ${new Date(visit.startedAt).toLocaleDateString("en-US", { dateStyle: "long" })}`,
+          ]),
       plural(findings.length, "finding"),
       ...(photoCount > 0 ? [plural(photoCount, "photo")] : []),
     ].join(", ") + ".",
@@ -187,12 +191,22 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
   ).length;
   const offline = findings.filter(
     (finding) => finding.extractedOffline && finding.extractionTier === "on_device",
-  ).length;
+  );
+  const simulated = offline.filter((finding) => finding.extractedSimulated).length;
+  const real = offline.length - simulated;
+  const how = [
+    ...(real > 0 ? [`${real} of them with no connection`] : []),
+    ...(simulated > 0
+      ? [`${simulated} with the connection switched off by the demo control (simulated offline)`]
+      : []),
+  ];
   const provenance = [
-    `${onDevice} of ${plural(structured, "structured note")} ${onDevice === 1 ? "was" : "were"} turned into fields on the inspector's device${offline > 0 ? `, ${offline} of them with no connection` : ""}.`,
-    polished.length > 0
-      ? "Report wording and severity were written by Gemini in the cloud. Both steps ran through Firebase AI Logic."
-      : "Report wording and severity are added by Gemini in the cloud once there is a connection.",
+    `${onDevice} of ${plural(structured, "structured note")} ${onDevice === 1 ? "was" : "were"} turned into fields on the inspector's device${how.length > 0 ? `, ${how.join(" and ")}` : ""}.`,
+    polished.length === 0
+      ? "Report wording and severity are added by Gemini in the cloud once there is a connection."
+      : waiting === 0
+        ? "Report wording and severity were written by Gemini in the cloud. Both steps ran through Firebase AI Logic."
+        : `Report wording and severity for ${polished.length} of ${plural(findings.length, "finding")} were written by Gemini in the cloud; the rest show the captured fields and are marked Not reviewed. Both steps ran through Firebase AI Logic.`,
     ...(photoCount > 0
       ? ["Photos were attached by the inspector and were not analyzed by a model."]
       : []),

@@ -45,6 +45,11 @@ export interface Finding {
   extractionTier: Tier | null;
   /** True if the fields were extracted while the app was offline. */
   extractedOffline: boolean;
+  /**
+   * True if that offline state came from the "Simulate offline" demo control
+   * while the browser itself still had a connection.
+   */
+  extractedSimulated?: boolean;
   /** Why the note could not be structured yet, if it could not. */
   captureError: string | null;
   /** The tile the pin sits in. Null until the note is structured or filed. */
@@ -107,6 +112,12 @@ interface PlumbDB extends DBSchema {
 }
 
 let dbPromise: Promise<IDBPDatabase<PlumbDB>> | null = null;
+let blockedHandler: (() => void) | null = null;
+
+/** Called if another tab holds an older version of the database open. */
+export function onStoreBlocked(handler: () => void): void {
+  blockedHandler = handler;
+}
 
 function db(): Promise<IDBPDatabase<PlumbDB>> {
   dbPromise ??= openDB<PlumbDB>("plumb", 2, {
@@ -129,6 +140,20 @@ function db(): Promise<IDBPDatabase<PlumbDB>> {
         database.createObjectStore("meta");
       }
     },
+    blocked() {
+      blockedHandler?.();
+    },
+    blocking(_current, _blocked, event) {
+      // A newer tab wants to upgrade: let go, so it is not left waiting.
+      (event.target as IDBDatabase).close();
+      dbPromise = null;
+    },
+    terminated() {
+      dbPromise = null;
+    },
+  }).catch((cause: unknown) => {
+    dbPromise = null;
+    throw cause;
   });
   return dbPromise;
 }
