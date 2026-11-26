@@ -1,37 +1,57 @@
 # Plumb
 
-Plumb is a Chrome web app for property and field inspectors. It captures
-findings where there is no signal, using Gemini Nano on the device, and turns
-them into a clear report once the connection is back, using Gemini in the
-cloud. Both tiers run through
+Inspectors often work in places with no internet: basements, warehouses,
+remote sites. When the signal drops, findings end up on paper and get retyped
+later, which costs time and accuracy. Plumb is for those moments.
+
+Plumb is a Chrome web app for any site visit. It captures findings where
+there is no signal, using Gemini Nano on the device, and turns them into a
+clear report once the connection is back, using Gemini in the cloud. Both
+tiers run through
 [Firebase AI Logic](https://firebase.google.com/docs/ai-logic/hybrid) hybrid
 inference.
 
 ## What it does
 
-1. **Capture.** Type a short note such as `kitchen outlet next to sink has no
-   gfci`. The note is saved to IndexedDB first, then structured into fields
-   (`room`, `item`, `issue`, `size_cm`, `water_related`) by the on-device
-   model. Click the floor plan to pin it.
-2. **Queue.** Findings stay on the device. With no connection, nothing is
-   sent anywhere.
-3. **Reconnect.** Cloud Gemini writes the report sentence, assigns a severity
-   (Low, Moderate, High) and flags water and safety issues. Rooms on the plan
-   take the color of their worst finding.
-4. **Report.** One page with summary counts, the pinned plan and every
-   finding, printable or saved as PDF from the browser.
+1. **Start a visit.** Name the site and pick a visit type: rental move-out,
+   warehouse safety walk-through, construction punch list, restaurant health
+   check, or a custom type you name yourself.
+2. **Capture.** Type a short note such as `storage rack upright bent about 6
+   inches near aisle 3`. The note is saved to IndexedDB first, then
+   structured into fields (`area`, `item`, `issue`, `size_cm`,
+   `water_related`) by the on-device model.
+3. **Areas appear from your notes.** There is no fixed floor plan. The area
+   each note names becomes a tile on the site map, marked "Created from
+   note", and the finding is pinned inside it. If the model reads an area
+   wrong, fix it: add an area, rename one (renaming to an existing name
+   merges the two), drag a pin to another tile, or pick the area on the
+   finding's card.
+4. **Attach photos.** Pick image files or use the camera. Photos are
+   downscaled in the browser to at most 1280 px, stored as JPEG in IndexedDB
+   and need no connection.
+5. **Reconnect.** Cloud Gemini writes the report sentence, assigns a severity
+   (Low, Moderate, High) and flags water and safety issues. Each tile takes
+   the color of its worst finding.
+6. **Report.** One page with a summary, the count per area, every finding
+   sorted by severity and its photos, printable or saved as PDF from the
+   browser. It is stamped Ready once every finding has been reviewed.
 
 A routing log shows every model call: the inference mode it was made with,
 the tier that answered, the measured latency and the network state. The
-**Simulate offline** switch is a demo control: it forces device-only calls
-and holds cloud sync, so the offline path can be shown without leaving the
-network.
+figures next to it (fields extracted offline, prompt bytes sent to the cloud
+while offline, cloud polish calls, median on-device latency) are counted from
+that log and from the stored findings. Nothing on the screen is a
+placeholder.
+
+The **Simulate offline** switch is a demo control: it forces device-only
+calls and holds cloud sync, so the offline path can be shown without leaving
+the network. Calls made with it on are marked "offline (simulated)" in the
+log.
 
 ## Why hybrid
 
-An inspector walking through a basement or a stairwell often has no
-connection, so anything that has to work during the walkthrough must run on
-the device. Judging how serious a defect is, and writing it up clearly, is a
+On site there is often no connection, so anything that has to work during
+the visit must run on the device. Judging how serious a defect is, and writing it up clearly, is a
 harder task that benefits from a larger model. Plumb splits the work along
 that line:
 
@@ -52,6 +72,7 @@ flowchart LR
   sdk -- "online: ONLY_IN_CLOUD<br/>App Check token" --> cloud[Gemini in the cloud]
   nano -- "structured fields" --> idb
   cloud -- "sentence, severity, flags" --> idb
+  photo[Attached photos] --> idb
   idb --> report[Printable report]
 ```
 
@@ -114,17 +135,27 @@ register it as the App Check provider and set
 `VITE_RECAPTCHA_ENTERPRISE_SITE_KEY`. The debug token is only read by the dev
 server on localhost and is left out of production builds.
 
+## Visit types
+
+A visit type is a small JSON entry in `src/presets.json`. It changes only
+four things: the areas suggested under the site map, a one-line wording hint
+added to the capture prompt, the report headings and the example notes. To
+add a visit type, add an entry to that file. No code changes are needed.
+
 ## Project layout
 
 ```
-index.html        The app: capture view and report view
+index.html        The app: visit setup, capture view and report view
 bench.html        Routing bench, a developer page for testing each route
 vite.config.ts    Build config and the app shell service worker
 src/
   app.ts          State, capture and sync pipeline, rendering
-  plan.ts         SVG floor plan, pins and heat map
+  map.ts          Site map: area tiles, pins and heat colors
+  presets.json    Visit types
+  photos.ts       Photo downscaling
+  kpi.ts          Figures counted from the routing log
   report.ts       Printable report
-  store.ts        IndexedDB: findings, routing log, site name
+  store.ts        IndexedDB: visit, areas, findings, photos, routing log
   firebase.ts     Firebase app, App Check and the single getAI() call
   ai/models.ts    One model instance per routing decision
   ai/schema.ts    Shared JSON schemas, prompts and output validation
@@ -138,10 +169,20 @@ src/
   model, so only the cloud path works there.
 - The first use downloads the on-device model, which needs an unmetered
   connection.
-- One inspection at a time, on a built-in demo floor plan. Pins are placed
-  by the inspector; the model does not locate findings.
+- The site map is schematic. Tiles are areas in the order they were created,
+  not a floor plan, and a pin marks which area a finding belongs to, not
+  where in the area it is.
+- Area names come from a small on-device model reading a short note. It can
+  name the same place two ways or pick the wrong one, which is why areas can
+  be renamed, merged and reassigned by hand.
+- Photos are evidence attached by the inspector. No model looks at them, and
+  they are not sent to the cloud.
 - Severity is a model's suggestion and needs an inspector's review.
-- No photos or voice input yet.
+- One visit at a time, stored in this browser only. There is no account and
+  no sync between devices.
+- "Sent to cloud while offline" counts the prompt text of this app's model
+  calls. It does not measure other network traffic.
+- No voice input.
 
 ## License
 

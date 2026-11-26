@@ -921,8 +921,10 @@ function renderMap(): void {
   );
 }
 
-function field(term: string, value: string): HTMLElement[] {
-  return [el("dt", undefined, term), el("dd", undefined, value)];
+function field(term: string, value: string): HTMLElement {
+  const pair = el("div");
+  pair.append(el("dt", undefined, term), el("dd", undefined, value));
+  return pair;
 }
 
 function actionButton(
@@ -995,9 +997,18 @@ function renderCard(finding: Finding): HTMLLIElement {
   const head = el("div", "card-head");
   head.append(el("span", "card-number", String(finding.seq)));
   const title = el("h3", "card-title");
-  title.textContent = finding.extraction
-    ? `${area?.name ?? "Not filed"}: ${finding.extraction.item}`
-    : "New note";
+  // The title is the keyboard way to open a card's actions.
+  const toggle = el(
+    "button",
+    "card-toggle",
+    finding.extraction
+      ? `${area?.name ?? "Not filed"}: ${finding.extraction.item}`
+      : "New note",
+  );
+  toggle.type = "button";
+  toggle.dataset.focusKey = `card:${finding.id}`;
+  toggle.setAttribute("aria-expanded", String(finding.id === selectedId));
+  title.append(toggle);
   head.append(title);
   const chip = el("span", "chip", finding.polish?.severity ?? "Draft");
   chip.dataset.key = finding.polish
@@ -1023,12 +1034,12 @@ function renderCard(finding: Finding): HTMLLIElement {
     const { item, issue, size_cm, water_related } = finding.extraction;
     const fields = el("dl", "fields");
     fields.append(
-      ...field("area", finding.extraction.area),
-      ...field("item", item),
-      ...field("issue", issue),
-      ...field("size_cm", size_cm === null ? "null" : String(size_cm)),
-      ...field("water_related", String(water_related)),
-      ...field("severity", "waiting for cloud"),
+      field("area", finding.extraction.area),
+      field("item", item),
+      field("issue", issue),
+      field("size_cm", size_cm === null ? "null" : String(size_cm)),
+      field("water_related", String(water_related)),
+      field("severity", "waiting for cloud"),
     );
     card.append(fields);
   } else if (finding.status === "structuring") {
