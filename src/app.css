@@ -53,7 +53,7 @@
   --line: #c6d0df;
   --wall: #2f61b8;
   --ink: #152038;
-  --muted: #55627d;
+  --muted: #4c5872;
   --device: #0b7696;
   --cloud: #6040d6;
   --high: #c62f48;
@@ -63,7 +63,7 @@
   --edge: #9aabc4;
   --card-line: #d2dae7;
   --selected: #edf3fc;
-  --placeholder: #6b7892;
+  --placeholder: #5a6781;
   --tile-name: #2c4a86;
   --field-key: #0b6a87;
   --problem: #b3263d;
@@ -79,6 +79,44 @@
   --grid: #1b2b4a12;
   --backdrop: #1b2b4a66;
   color-scheme: light;
+}
+
+/* Daylight is composed, not inverted. On pale paper a tinted fill takes far
+   less color than on navy, and colored text needs ink mixed in to stay
+   readable, so the dot carries the color and the label leans toward ink. */
+:root[data-theme="light"] .tile[data-heat="low"] {
+  --heat-fill: 9%;
+}
+
+:root[data-theme="light"] .tile[data-heat="moderate"] {
+  --heat-fill: 11%;
+}
+
+:root[data-theme="light"] .tile[data-heat="high"] {
+  --heat-fill: 13%;
+}
+
+:root[data-theme="light"] .pin-tag {
+  color: color-mix(in srgb, var(--pin) 72%, var(--ink));
+}
+
+:root[data-theme="light"] .chip {
+  background: color-mix(in srgb, var(--key) 14%, transparent);
+  color: color-mix(in srgb, var(--key) 75%, var(--ink));
+}
+
+:root[data-theme="light"] .paper .chip {
+  background: var(--key);
+  color: #fff;
+}
+
+/* Offline on paper: the color drains, the sheet does not go dark. */
+:root[data-theme="light"][data-theme] body[data-net="offline"] .tiles {
+  filter: grayscale(1);
+}
+
+:root[data-theme="light"] .paper {
+  box-shadow: 0 18px 44px -18px #1b2b4a59;
 }
 
 *,
@@ -832,7 +870,7 @@ main {
 .lost {
   position: absolute;
   z-index: 1;
-  top: 1.25rem;
+  bottom: 1.25rem;
   left: 50%;
   width: max-content;
   max-width: calc(100% - 2.5rem);
@@ -855,7 +893,7 @@ main {
 @keyframes lost-in {
   from {
     opacity: 0;
-    transform: translateY(-10px);
+    transform: translateY(10px);
   }
 }
 
@@ -2135,7 +2173,7 @@ th {
     --sheet: #fff;
     width: auto;
     padding: 0;
-    box-shadow: none;
+    box-shadow: none !important;
     print-color-adjust: exact;
     -webkit-print-color-adjust: exact;
   }
