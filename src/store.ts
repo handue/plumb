@@ -80,7 +80,7 @@ export interface CallRecord {
   id?: number;
   at: string;
   findingSeq: number;
-  step: "structure" | "polish" | "photo";
+  step: "structure" | "polish" | "photo" | "warmup";
   /** Firebase AI Logic inference mode the call was made with. */
   mode: string;
   tier: Tier | null;

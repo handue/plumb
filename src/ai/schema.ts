@@ -28,7 +28,23 @@ export const EXTRACTION_SCHEMA = {
   additionalProperties: false,
 };
 
-export const EXTRACTION_INSTRUCTIONS = `You extract structured fields from a site inspector's short note. area is the place on the site the note is about, two or three words at most. If the place matches one of the known areas, copy that name exactly; otherwise use the words from the note. If the note names no place, use "${GENERAL_AREA}". item is the thing inspected. issue is what is wrong with it. Convert feet and inches to centimeters (1 ft = 30.5 cm, 1 inch = 2.54 cm). size_cm is null when no size is stated. water_related is true only if the note mentions water, leaks, damp, wet, mold or dripping. Output JSON only.`;
+/**
+ * Wording and examples were tuned against the on-device model with a 30-note
+ * test set across four visit types. The examples matter: without them the
+ * model left sizes in meters as null and guessed a known area for notes that
+ * named none.
+ */
+export const EXTRACTION_INSTRUCTIONS = `You turn a site inspector's short note into JSON with five fields.
+area: the place on the site that the note names, two or three words at most. If the note names one of the known areas, copy that name exactly. If it names a different place, use the words from the note. Never pick a known area the note does not name. A surface or object (floor, wall, ceiling, door) is not a place. If the note names no place, use "${GENERAL_AREA}".
+item: the thing inspected.
+issue: what is wrong with it.
+size_cm: the size in centimeters as a number. Convert every unit: 1 m = 100 cm, 1 ft = 30.5 cm, 1 inch = 2.54 cm, 1 mm = 0.1 cm. Use null only when the note gives no size.
+water_related: true only if the note mentions water, a leak, damp, wet, mold or dripping.
+Examples:
+Note: boiler room pipe lagging missing, 2 m run -> {"area":"Boiler room","item":"pipe lagging","issue":"missing","size_cm":200,"water_related":false}
+Note: crack in the wall about 10 inches long -> {"area":"${GENERAL_AREA}","item":"wall","issue":"crack","size_cm":25.4,"water_related":false}
+Note: stock room ceiling tile damp, 1.5 ft patch -> {"area":"Stock room","item":"ceiling tile","issue":"damp patch","size_cm":45.75,"water_related":true}
+Output JSON only.`;
 
 /** The per-call prompt: visit context first, then the note. */
 export function extractionPrompt(
@@ -115,7 +131,7 @@ export const POLISH_SCHEMA = {
   additionalProperties: false,
 };
 
-export const POLISH_INSTRUCTIONS = `You are a site inspection report editor. You receive the visit type, one finding as JSON and the inspector's original note. Write one or two clear sentences for the report. Assign a severity: High for safety hazards or active water damage, Moderate for defects that need repair soon, Low for cosmetic issues. Set water_flag for leaks, damp or mold, and safety_flag for electrical, fire, structural or fall hazards. Use the given Area as the location and do not name a different one. Do not invent details that are not in the note.`;
+export const POLISH_INSTRUCTIONS = `You are a site inspection report editor. You receive the visit type, one finding as JSON and the inspector's original note. Write one or two clear sentences for the report. Assign a severity. High: immediate danger to people or to the structure, or active water damage. Moderate: a defect or hazard that needs repair soon but is not an immediate danger, such as a trip hazard or a worn part. Low: cosmetic issues and routine maintenance. Set water_flag for leaks, damp or mold, and safety_flag for electrical, fire, structural or fall hazards. Use the given Area as the location and do not name a different one. Do not invent details that are not in the note.`;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);

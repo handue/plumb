@@ -16,8 +16,14 @@ import {
 
 /** Cloud model for the capture fallback: small and fast, same job as Nano. */
 export const CAPTURE_CLOUD_MODEL = "gemini-3.5-flash-lite";
-/** Cloud model for polish and severity, where judgment matters. */
-export const POLISH_CLOUD_MODEL = "gemini-3.8-flash";
+/**
+ * Cloud model for polish and severity. The default is the model whose free
+ * quota is large enough for a public demo; larger models had a daily free
+ * quota of 20 requests when this was tested. Set VITE_POLISH_MODEL to use a
+ * larger one on a project with billing.
+ */
+export const POLISH_CLOUD_MODEL =
+  import.meta.env.VITE_POLISH_MODEL || "gemini-3.5-flash-lite";
 
 /**
  * The on-device model takes its system prompt and schema through Chrome's
@@ -35,7 +41,13 @@ export const CAPTURE_ON_DEVICE: OnDeviceParams = {
       },
     ],
   },
-  promptOptions: { responseConstraint: EXTRACTION_SCHEMA },
+  // The schema still constrains the output. Leaving it out of the model's
+  // input shortens the prompt, which cut the measured latency by about a
+  // third; the instructions already describe every field.
+  promptOptions: {
+    responseConstraint: EXTRACTION_SCHEMA,
+    omitResponseConstraintInput: true,
+  } as OnDeviceParams["promptOptions"],
 };
 
 const captureCloud = {

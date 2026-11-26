@@ -46,7 +46,10 @@ function wasOffline(record: CallRecord): boolean {
  * Figures for the bottom dock. Every value is counted from the findings and
  * the routing log stored on this device. Nothing here is estimated.
  */
-export function computeKpis(findings: Finding[], calls: CallRecord[]): Kpi[] {
+export function computeKpis(findings: Finding[], log: CallRecord[]): Kpi[] {
+  // The warm-up call loads the model into memory. It is in the routing log,
+  // but it is not work on a note, so the figures leave it out.
+  const calls = log.filter((record) => record.step !== "warmup");
   const offlineFindings = findings.filter(
     (finding) =>
       finding.extraction &&

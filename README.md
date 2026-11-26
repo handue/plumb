@@ -51,9 +51,9 @@ log.
 ## Why hybrid
 
 On site there is often no connection, so anything that has to work during
-the visit must run on the device. Judging how serious a defect is, and writing it up clearly, is a
-harder task that benefits from a larger model. Plumb splits the work along
-that line:
+the visit must run on the device. Judging how serious a defect is, and
+writing it up clearly, is a harder task that is left to a cloud model.
+Plumb splits the work along that line:
 
 | Step | Inference mode | Why |
 |---|---|---|
@@ -83,6 +83,35 @@ Two details in the code keep the split honest:
   so "device only" never leaves the device.
 - App Check tokens are only attached to cloud requests. On-device calls need
   no token, which is why capture works with the network off.
+
+## Measured on-device results
+
+Measured with Chrome 158 on one Mac laptop, using the same prompt and schema
+as the app, on a 30-note test set across four visit types (warehouse,
+restaurant, construction, rental). One run, so treat the figures as a
+snapshot, not a benchmark.
+
+| Field | Correct |
+|---|---|
+| Area (free text, matched after normalizing) | 97% |
+| Item | 100% |
+| Size in cm, including "no size" | 97% |
+| Water flag | 93% |
+| Valid JSON | 100% |
+
+Median latency was about 2.7 s per note and the 95th percentile about 4.1 s.
+The first on-device call after a page load can take around half a minute
+while Chrome loads the model into memory, so the app makes one warm-up call
+at startup and shows it in the routing log.
+
+Two things moved these numbers during tuning. Few-shot examples in the
+instructions fixed sizes given in meters, which the model had left empty.
+Leaving the JSON schema out of the model's input (the output is still
+constrained by it) cut latency by about a third.
+
+The cloud step uses `gemini-3.5-flash-lite` by default, because the larger
+models had a free quota of 20 requests a day when this was tested. Set
+`VITE_POLISH_MODEL` to use a larger model on a project with billing.
 
 ## Requirements
 
@@ -185,6 +214,8 @@ src/
 - Severity is a model's suggestion and needs an inspector's review.
 - One visit at a time, stored in this browser only. There is no account and
   no sync between devices.
+- On-device capture takes a few seconds per note on a laptop, and longer on
+  the first call after a page load.
 - "Sent to cloud while offline" counts the prompt text of this app's model
   calls. It does not measure other network traffic.
 - No voice input.

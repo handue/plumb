@@ -231,12 +231,61 @@ function showFeedStatus(...content: (string | Node)[]): void {
   feedStatus.hidden = content.length === 0;
 }
 
+/** True for a cloud answer that says "too busy" or "try later". */
+function isBusy(error: string | null): boolean {
+  return (
+    error !== null &&
+    !isOutOfQuota(error) &&
+    /\[(429|5\d\d)\b|high demand|overloaded/i.test(error)
+  );
+}
+
+/** True when the project's quota for the cloud model is used up. */
+function isOutOfQuota(error: string | null): boolean {
+  return error !== null && /quota|RESOURCE_EXHAUSTED/i.test(error);
+}
+
+/** Cloud steps retried after a busy answer, per finding, in this session. */
+const busyRetries = new Map<string, number>();
+const BUSY_RETRY_LIMIT = 3;
+const BUSY_RETRY_MS = 8000;
+
+/** Tries a finding's failed cloud step again after a pause, a few times. */
+function retryWhenBusy(id: string, error: string | null): void {
+  if (!isBusy(error)) return;
+  const tries = busyRetries.get(id) ?? 0;
+  if (tries >= BUSY_RETRY_LIMIT) return;
+  busyRetries.set(id, tries + 1);
+  const startedIn = generation;
+  setTimeout(() => {
+    if (startedIn !== generation || !isOnline()) return;
+    const finding = findingById(id);
+    if (!finding) return;
+    if (finding.status === "queued" && finding.captureError) {
+      enqueue(structureQueue, "structure", id, structure);
+    } else if (finding.status === "draft" && finding.polishError) {
+      enqueue(polishQueue, "polish", id, polish);
+    }
+  }, BUSY_RETRY_MS * (tries + 1));
+}
+
 /** Turns an SDK error into something an inspector can act on. */
 function explain(error: string | null, fallback: string): string {
   if (!error) return fallback;
   if (/^No answer after/.test(error)) return error;
   if (/app ?check/i.test(error)) {
     return "App Check did not accept this browser, so the cloud refused the call. On localhost, register this browser's debug token in the Firebase console.";
+  }
+  if (isOutOfQuota(error)) {
+    return "The cloud model's quota for this project is used up, so it refused the call. Try again later, or use a model with more quota.";
+  }
+  if (isBusy(error)) {
+    return "The cloud model is busy right now. Plumb tries again by itself a few times; after that, use Try again.";
+  }
+  // The SDK words every failed request as "Error fetching from", so a status
+  // code in the message means the cloud was reached and answered.
+  if (/\[\d{3}\b/.test(error)) {
+    return error.length > 220 ? `${error.slice(0, 219)}…` : error;
   }
   if (/fetch|network/i.test(error)) {
     return "The cloud could not be reached. It will be tried again when the connection is back.";
@@ -488,6 +537,7 @@ async function structure(id: string): Promise<void> {
   if (record.text === null) {
     current.status = "queued";
     current.captureError = explain(record.error, "The model call failed.");
+    retryWhenBusy(id, record.error);
   } else {
     try {
       current.extraction = parseExtraction(record.text);
@@ -575,6 +625,7 @@ async function polish(id: string): Promise<void> {
   }
   if (record.text === null) {
     current.polishError = explain(record.error, "The cloud call failed.");
+    retryWhenBusy(id, record.error);
   } else {
     try {
       current.polish = parsePolish(record.text);
@@ -605,6 +656,41 @@ function sync(retry: boolean): void {
       enqueue(polishQueue, "polish", finding.id, polish);
     }
   }
+}
+
+// ------------------------------------------------------------------- warm-up
+
+let warmedUp = false;
+
+/**
+ * Chrome loads the on-device model into memory on the first call of a page,
+ * which was measured at around half a minute. One device-only call on a
+ * sample note at startup takes that wait, so the inspector's first note does
+ * not. It is a real model call, so it is in the routing log as "Warm-up".
+ */
+function warmUp(): void {
+  if (warmedUp || !visit || !configured || availability !== "available") return;
+  warmedUp = true;
+  structureQueue(async () => {
+    const startedIn = generation;
+    const simulatedOffline = simulated;
+    showCaptureStatus(
+      "Loading the on-device model into memory. Notes added now are saved and wait for it.",
+    );
+    const prompt = extractionPrompt("door hinge loose", {
+      visitType: "Site visit",
+      hint: "",
+      knownAreas: [],
+    });
+    const record = await run("captureOffline", prompt);
+    if (startedIn !== generation) return;
+    await logCall(0, "warmup", "captureOffline", prompt, record, simulatedOffline);
+    if (captureStatus.textContent?.startsWith("Loading the on-device model")) {
+      captureStatus.textContent = "";
+      showCaptureStatus();
+    }
+    renderDock();
+  });
 }
 
 // ------------------------------------------------------------------- capture
@@ -1072,6 +1158,7 @@ async function refreshAvailability(): Promise<void> {
   availability = await onDeviceAvailability();
   netText.textContent = describeNetwork();
   renderNotice();
+  warmUp();
   await refreshAssist();
 }
 
@@ -1525,6 +1612,7 @@ function networkLabel(record: CallRecord): string {
 }
 
 const STEP_LABELS: Record<CallRecord["step"], string> = {
+  warmup: "Warm-up",
   structure: "Structure",
   polish: "Polish",
   photo: "Photo assist",
@@ -1553,7 +1641,7 @@ function renderDock(): void {
       if (className) td.className = className;
     };
     cell(new Date(record.at).toLocaleTimeString("en-US", { hourCycle: "h23" }));
-    cell(record.findingSeq > 0 ? `#${record.findingSeq}` : "none yet");
+    cell(record.findingSeq > 0 ? `#${record.findingSeq}` : "n/a");
     cell(STEP_LABELS[record.step]);
     cell(record.mode, "mode");
     cell(
@@ -1764,6 +1852,7 @@ setupView.addEventListener("submit", (event) => {
     setupCustomLabel.value = "";
     renderExamples();
     render();
+    warmUp();
     noteInput.focus();
   });
 });

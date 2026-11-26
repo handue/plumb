@@ -8,6 +8,7 @@ interface ImportMetaEnv {
   readonly VITE_RECAPTCHA_ENTERPRISE_SITE_KEY?: string;
   readonly VITE_APPCHECK_DEBUG_TOKEN?: string;
   readonly VITE_PHOTO_ASSIST?: string;
+  readonly VITE_POLISH_MODEL?: string;
 }
 
 interface ImportMeta {
