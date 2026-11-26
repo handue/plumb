@@ -132,6 +132,10 @@ is what the manual area controls are for. The one water-flag miss was an oil
 spill flagged as water related. The test notes and the harness are not
 included in this repository.
 
+The cloud model for the polish step is read from Firebase Remote Config
+(parameter `polish_model`), so it can be changed without a redeploy. With no
+value set, the build's default is used.
+
 The cloud step uses `gemini-3.5-flash-lite` by default, because the larger
 models had a free quota of 20 requests a day when this was tested. Set
 `VITE_POLISH_MODEL` to use a larger model on a project with billing.
@@ -213,6 +217,7 @@ src/
   ai/models.ts    One model instance per routing decision
   ai/schema.ts    Shared JSON schemas, prompts and output validation
   ai/run.ts       Timed model calls that record which tier answered
+  ai/remote.ts    Remote Config: the cloud model name
   presets.ts      Loads the visit types
   bench.ts        Routing bench logic
   app.css         Styles and the two themes

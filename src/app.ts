@@ -10,9 +10,11 @@ import {
   onDeviceAvailability,
   photoAvailability,
   prepareOnDeviceModel,
+  POLISH_CLOUD_MODEL,
   ROUTE_MODES,
   type Route,
 } from "./ai/models";
+import { loadRemoteModel } from "./ai/remote";
 import { blocker, run } from "./ai/run";
 import {
   extractionPrompt,
@@ -2133,6 +2135,12 @@ async function start(): Promise<void> {
 
   renderExamples();
   render();
+  // The first polish waits for this, so a remotely set model is used from
+  // the first call. It does not hold up capture, which runs on the device.
+  const remoteModel = configured
+    ? loadRemoteModel(POLISH_CLOUD_MODEL)
+    : Promise.resolve();
+  polishQueue(() => remoteModel);
   await refreshAvailability();
   sync(true);
 }

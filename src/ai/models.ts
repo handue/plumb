@@ -5,6 +5,7 @@ import {
   type OnDeviceParams,
 } from "firebase/ai";
 import { getFirebase } from "../firebase";
+import { remotePolishModel } from "./remote";
 import {
   EXTRACTION_INSTRUCTIONS,
   EXTRACTION_SCHEMA,
@@ -181,7 +182,8 @@ export function getModel(route: Route): GenerativeModel {
       model = getGenerativeModel(ai, {
         mode: InferenceMode.ONLY_IN_CLOUD,
         inCloudParams: {
-          model: POLISH_CLOUD_MODEL,
+          // Remote Config can name another model; the build's default otherwise.
+          model: remotePolishModel() ?? POLISH_CLOUD_MODEL,
           systemInstruction: POLISH_INSTRUCTIONS,
           generationConfig: {
             responseMimeType: "application/json",
