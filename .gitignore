@@ -30,3 +30,7 @@ DESIGN.md
 
 # Local Chrome profile used for automated on-device testing
 .chrome-test-profile/
+
+# Local Python environment for narration (video production)
+.ttsenv/
+video/
