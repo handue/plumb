@@ -112,6 +112,9 @@ export interface PlanView {
   setHeat(heat: Partial<Record<PlanRoom, Severity>>): void;
   /** Turns placing mode on or off, and highlights a suggested room. */
   setPlacing(active: boolean, suggested: PlanRoom | null): void;
+  /** Moves keyboard focus to a room while placing. Defaults to the first room. */
+  focusRoom(room: PlanRoom | null): void;
+  focusPin(id: string): void;
 }
 
 function dimensionString(
@@ -307,7 +310,18 @@ export function createPlan(
         return group;
       });
       drawn = new Set(pins.map((pin) => pin.id));
+      // Pins are redrawn on every update, so hand focus to the new node.
+      const active = document.activeElement;
+      const focusedId =
+        active instanceof SVGElement && pinLayer.contains(active)
+          ? active.closest<SVGGElement>(".pin")?.dataset.id
+          : undefined;
       pinLayer.replaceChildren(...groups);
+      if (focusedId) {
+        groups
+          .find((group) => group.dataset.id === focusedId)
+          ?.focus({ preventScroll: true });
+      }
     },
 
     setHeat(heat) {
@@ -316,6 +330,16 @@ export function createPlan(
         if (severity) rect.dataset.heat = severity.toLowerCase();
         else delete rect.dataset.heat;
       }
+    },
+
+    focusRoom(room) {
+      (rooms.get(room ?? PLAN_ROOMS[0]) ?? null)?.focus({ preventScroll: true });
+    },
+
+    focusPin(id) {
+      pinLayer
+        .querySelector<SVGGElement>(`.pin[data-id="${CSS.escape(id)}"]`)
+        ?.focus({ preventScroll: true });
     },
 
     setPlacing(active, suggested) {

@@ -48,10 +48,6 @@ body {
   margin: 0;
   padding: 0.75rem;
   background-color: var(--ground);
-  background-image:
-    linear-gradient(#ffffff07 1px, transparent 1px),
-    linear-gradient(90deg, #ffffff07 1px, transparent 1px);
-  background-size: 40px 40px;
   color: var(--ink);
   font: 0.9375rem/1.45 var(--sans);
   caret-color: var(--device);
@@ -469,11 +465,17 @@ main {
   font-weight: 500;
 }
 
+/* The drafting grid belongs to the sheet the plan is drawn on. */
 .plan-stage {
   position: relative;
   flex: 1;
   min-height: 12rem;
   overflow: hidden;
+  background-image:
+    linear-gradient(#ffffff08 1px, transparent 1px),
+    linear-gradient(90deg, #ffffff08 1px, transparent 1px);
+  background-size: 32px 32px;
+  background-position: center;
 }
 
 .plan {
@@ -649,9 +651,16 @@ main {
   opacity: 0.38;
 }
 
-.pin.is-selected .pin-dot,
-.pin:focus-visible .pin-dot {
+.pin.is-selected .pin-dot {
   stroke: #fff;
+  stroke-width: 2.5;
+}
+
+/* Focus rings the halo, so it reads apart from the selected state. */
+.pin:focus-visible .pin-halo {
+  opacity: 1;
+  fill: transparent;
+  stroke: var(--device);
   stroke-width: 2.5;
 }
 

@@ -34,7 +34,10 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(ASSETS))
+      // Bypass the HTTP cache, so a new version never stores an old page.
+      .then((cache) =>
+        cache.addAll(ASSETS.map((url) => new Request(url, { cache: "reload" }))),
+      )
       .then(() => self.skipWaiting()),
   );
 });

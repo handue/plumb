@@ -44,11 +44,16 @@ export async function blocker(route: Route): Promise<string | null> {
   }
 }
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  onTimeout: () => void,
+): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      reject(new Error("Timed out waiting for the cloud (App Check or network)."));
+      onTimeout();
+      reject(new Error(`No answer after ${Math.round(ms / 1000)} seconds.`));
     }, ms);
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
@@ -68,10 +73,15 @@ export async function run(route: Route, prompt: string): Promise<RunRecord> {
   });
 
   try {
-    const call = getModel(route).generateContent(prompt);
+    // Aborting stops a cloud request that is still waiting to be sent. The
+    // SDK does not pass the signal to the on-device model.
+    const controller = new AbortController();
+    const call = getModel(route).generateContent(prompt, {
+      signal: controller.signal,
+    });
     const result = await (route === "captureOffline"
       ? call
-      : withTimeout(call, CLOUD_TIMEOUT_MS));
+      : withTimeout(call, CLOUD_TIMEOUT_MS, () => controller.abort()));
     const source = result.response.inferenceSource ?? null;
 
     // A device-only call answered by anything else is a routing fault, not a

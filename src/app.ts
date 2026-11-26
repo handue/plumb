@@ -110,6 +110,9 @@ let lastDeleted: Finding | null = null;
 const shownCards = new Set<string>();
 const freshlyPolished = new Set<string>();
 
+/** Bumped when the inspection is cleared, so calls from before it are dropped. */
+let generation = 0;
+
 const configured = missingConfig().length === 0;
 
 /** Online for the app's purposes: the browser is online and the demo switch is off. */
@@ -124,10 +127,10 @@ function findingById(id: string): Finding | undefined {
 /** Turns an SDK error into something an inspector can act on. */
 function explain(error: string | null, fallback: string): string {
   if (!error) return fallback;
+  if (/^No answer after/.test(error)) return error;
   if (/app ?check/i.test(error)) {
     return "App Check did not accept this browser, so the cloud refused the call. On localhost, register this browser's debug token in the Firebase console.";
   }
-  if (/timed out/i.test(error)) return error;
   if (/fetch|network/i.test(error)) {
     return "The cloud could not be reached. It will be tried again when the connection is back.";
   }
@@ -170,15 +173,16 @@ function enqueue(
 }
 
 async function logCall(
-  finding: Finding,
+  findingSeq: number,
   step: CallRecord["step"],
   route: Route,
   record: Awaited<ReturnType<typeof run>>,
   simulatedOffline: boolean,
 ): Promise<void> {
+  const log = calls;
   const saved = await addCall({
     at: record.at,
-    findingSeq: finding.seq,
+    findingSeq,
     step,
     mode: ROUTE_MODES[route],
     tier: record.source,
@@ -187,7 +191,8 @@ async function logCall(
     simulatedOffline,
     error: record.error,
   });
-  calls.push(saved);
+  // Skip the in-memory row if the inspection was cleared during the write.
+  if (log === calls) calls.push(saved);
 }
 
 /** Turns a saved note into fields. Leaves it queued if that is not possible now. */
@@ -203,6 +208,7 @@ async function structure(id: string): Promise<void> {
   const blocked = configured
     ? await blocker(route)
     : "Firebase is not configured, so no model can be called.";
+  if (findingById(id) !== finding) return;
   if (blocked) {
     finding.captureError = blocked;
     await saveFinding(finding);
@@ -214,10 +220,16 @@ async function structure(id: string): Promise<void> {
   finding.captureError = null;
   render();
 
+  const started = generation;
   const record = await run(route, finding.note);
+  if (started !== generation) return;
+  // The call happened, so it is logged even if the finding was deleted.
+  await logCall(finding.seq, "structure", route, record, simulatedOffline);
   const current = findingById(id);
-  if (!current) return;
-  await logCall(current, "structure", route, record, simulatedOffline);
+  if (current !== finding) {
+    render();
+    return;
+  }
 
   if (record.text === null) {
     current.status = "queued";
@@ -261,12 +273,25 @@ async function polish(id: string): Promise<void> {
     lines.push(`Room marked on the floor plan: ${finding.pin.room}`);
   }
 
+  const started = generation;
   const record = await run("polish", lines.join("\n"));
+  if (started !== generation) return;
+  await logCall(finding.seq, "polish", "polish", record, simulatedOffline);
   const current = findingById(id);
-  if (!current) return;
-  await logCall(current, "polish", "polish", record, simulatedOffline);
+  if (current !== finding) {
+    render();
+    return;
+  }
 
   current.status = "draft";
+  if (!isOnline()) {
+    // The app went offline while the call was in flight. The call is in the
+    // log, but its result is not applied while the app says it is offline.
+    // Polish runs again on reconnect.
+    await saveFinding(current);
+    render();
+    return;
+  }
   if (record.text === null) {
     current.polishError = explain(record.error, "The cloud call failed.");
   } else {
@@ -303,7 +328,14 @@ function sync(retry: boolean): void {
 // ------------------------------------------------------------------- capture
 
 async function addFinding(note: string): Promise<void> {
-  const seq = findings.reduce((max, finding) => Math.max(max, finding.seq), 0) + 1;
+  // Never reuse a number: not a deleted finding's, nor one the log refers to.
+  const seq =
+    Math.max(
+      0,
+      lastDeleted?.seq ?? 0,
+      ...findings.map((finding) => finding.seq),
+      ...calls.map((record) => record.findingSeq),
+    ) + 1;
   const finding: Finding = {
     id: crypto.randomUUID(),
     seq,
@@ -340,10 +372,14 @@ captureForm.addEventListener("submit", (event) => {
 
 // --------------------------------------------------------------- pin placing
 
-function startPlacing(id: string): void {
+/** With `focusPlan`, keyboard focus moves to the plan so a room can be chosen. */
+function startPlacing(id: string, focusPlan = false): void {
   placingId = id;
   selectedId = id;
   render();
+  if (focusPlan) {
+    plan.focusRoom(toPlanRoom(findingById(id)?.extraction?.room));
+  }
 }
 
 function stopPlacing(): void {
@@ -358,6 +394,7 @@ async function placePin(x: number, y: number, room: PlanRoom): Promise<void> {
     render();
     return;
   }
+  const hadPlanFocus = planSvg.contains(document.activeElement);
   finding.pin = { x, y, room };
   await saveFinding(finding);
 
@@ -365,6 +402,10 @@ async function placePin(x: number, y: number, room: PlanRoom): Promise<void> {
   const next = findings.find((other) => other.extraction && !other.pin);
   if (next) placingId = next.id;
   render();
+  if (hadPlanFocus) {
+    if (next) plan.focusRoom(toPlanRoom(next.extraction?.room));
+    else plan.focusPin(finding.id);
+  }
 }
 
 const plan = createPlan(planSvg, {
@@ -387,8 +428,8 @@ document.addEventListener("keydown", (event) => {
 // ------------------------------------------------------------------- network
 
 function describeNetwork(): string {
-  if (simulated) return "Offline (simulated): on-device only";
-  if (!navigator.onLine) return "Offline: on-device only";
+  if (simulated) return "Offline (simulated): no cloud calls";
+  if (!navigator.onLine) return "Offline: no cloud calls";
   return "Online: cloud polish on";
 }
 
@@ -537,11 +578,13 @@ function renderPlan(): void {
 
   if (placing) {
     planHint.textContent = suggested
-      ? `Click the plan to pin finding ${placing.seq}. The note points to the ${ROOM_LABELS[suggested].toLowerCase()}. Press Escape to skip.`
-      : `Click the plan to pin finding ${placing.seq}. Press Escape to skip.`;
+      ? `Click the plan, or press Enter on a room, to pin finding ${placing.seq}. The note points to the ${ROOM_LABELS[suggested].toLowerCase()}. Escape skips.`
+      : `Click the plan, or press Enter on a room, to pin finding ${placing.seq}. Escape skips.`;
   } else if (document.body.dataset.signalLost) {
     planHint.textContent =
-      "Connection lost. Keep working: notes are structured on this device.";
+      availability === "available"
+        ? "Connection lost. Keep working: notes are structured on this device."
+        : "Connection lost. Keep working: notes are saved on this device and structured when you are back online.";
   } else {
     planHint.textContent = "";
   }
@@ -554,7 +597,7 @@ function field(term: string, value: string): HTMLElement[] {
 function actionButton(
   label: string,
   key: string,
-  onClick: () => void,
+  onClick: (viaKeyboard: boolean) => void,
   className = "quiet",
 ): HTMLButtonElement {
   const button = el("button", className, label);
@@ -562,7 +605,8 @@ function actionButton(
   button.dataset.focusKey = key;
   button.addEventListener("click", (event) => {
     event.stopPropagation();
-    onClick();
+    // A click with no pointer position came from the keyboard.
+    onClick(event.detail === 0);
   });
   return button;
 }
@@ -678,7 +722,8 @@ function renderCard(finding: Finding): HTMLLIElement {
       actionButton(
         isPlacing ? "Cancel placing" : finding.pin ? "Move pin" : "Place on plan",
         `place:${finding.id}`,
-        () => (isPlacing ? stopPlacing() : startPlacing(finding.id)),
+        (viaKeyboard) =>
+          isPlacing ? stopPlacing() : startPlacing(finding.id, viaKeyboard),
       ),
     );
   }
@@ -788,8 +833,13 @@ function renderView(): void {
   document.body.dataset.view = report ? "report" : "capture";
   captureView.hidden = report;
   reportView.hidden = !report;
-  tabCapture.toggleAttribute("aria-current", !report);
-  tabReport.toggleAttribute("aria-current", report);
+  for (const [tab, current] of [
+    [tabCapture, !report],
+    [tabReport, report],
+  ] as const) {
+    if (current) tab.setAttribute("aria-current", "page");
+    else tab.removeAttribute("aria-current");
+  }
   if (report) {
     renderReport(paper, findings, siteInput.value.trim(), planPins());
   }
@@ -844,12 +894,14 @@ clearButton.addEventListener("click", () => {
 clearDialog.addEventListener("close", () => {
   if (clearDialog.returnValue !== "confirm") return;
   void (async () => {
-    await clearInspection();
+    // Reset memory first, so a call that returns during the delete is dropped.
+    generation += 1;
     findings = [];
     calls = [];
     selectedId = null;
     placingId = null;
     lastDeleted = null;
+    await clearInspection();
     feedStatus.hidden = true;
     captureStatus.textContent = "";
     render();

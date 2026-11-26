@@ -7,9 +7,25 @@ cloud. Both tiers run through
 [Firebase AI Logic](https://firebase.google.com/docs/ai-logic/hybrid) hybrid
 inference.
 
-> **Status: early scaffold.** The app currently ships a routing bench that
-> proves the hybrid wiring. The capture, floor plan, sync and report screens
-> are in progress.
+## What it does
+
+1. **Capture.** Type a short note such as `kitchen outlet next to sink has no
+   gfci`. The note is saved to IndexedDB first, then structured into fields
+   (`room`, `item`, `issue`, `size_cm`, `water_related`) by the on-device
+   model. Click the floor plan to pin it.
+2. **Queue.** Findings stay on the device. With no connection, nothing is
+   sent anywhere.
+3. **Reconnect.** Cloud Gemini writes the report sentence, assigns a severity
+   (Low, Moderate, High) and flags water and safety issues. Rooms on the plan
+   take the color of their worst finding.
+4. **Report.** One page with summary counts, the pinned plan and every
+   finding, printable or saved as PDF from the browser.
+
+A routing log shows every model call: the inference mode it was made with,
+the tier that answered, the measured latency and the network state. The
+**Simulate offline** switch is a demo control: it forces device-only calls
+and holds cloud sync, so the offline path can be shown without leaving the
+network.
 
 ## Why hybrid
 
@@ -21,12 +37,31 @@ that line:
 
 | Step | Inference mode | Why |
 |---|---|---|
-| Structure a note into fields | `PREFER_ON_DEVICE` | Works with no network. Falls back to the cloud on machines without Gemini Nano. |
-| Structure a note, device only | `ONLY_ON_DEVICE` | Never reaches the cloud, so it keeps working with the network off. |
+| Structure a note, online | `PREFER_ON_DEVICE` | Uses the on-device model when the browser has it. Falls back to the cloud on machines without one. |
+| Structure a note, offline | `ONLY_ON_DEVICE` | Never reaches the cloud, so it keeps working with the network off. |
 | Polish wording and assign severity | `ONLY_IN_CLOUD` | A judgment call that waits for a connection instead of falling back to the small model. |
 
 The app reads `response.inferenceSource` from the SDK and shows which tier
 answered each call, with the latency measured in the browser.
+
+```mermaid
+flowchart LR
+  note[Inspector's note] --> idb[(IndexedDB queue)]
+  idb --> sdk[Firebase AI Logic<br/>hybrid inference]
+  sdk -- "offline: ONLY_ON_DEVICE<br/>online: PREFER_ON_DEVICE" --> nano[On-device model<br/>Chrome Prompt API]
+  sdk -- "online: ONLY_IN_CLOUD<br/>App Check token" --> cloud[Gemini in the cloud]
+  nano -- "structured fields" --> idb
+  cloud -- "sentence, severity, flags" --> idb
+  idb --> report[Printable report]
+```
+
+Two details in the code keep the split honest:
+
+- Without Chrome's Prompt API the SDK sends even `ONLY_ON_DEVICE` requests
+  to the cloud. Plumb checks for the API first and refuses the call instead,
+  so "device only" never leaves the device.
+- App Check tokens are only attached to cloud requests. On-device calls need
+  no token, which is why capture works with the network off.
 
 ## Requirements
 
@@ -67,7 +102,12 @@ answered each call, with the latency measured in the browser.
    **Security > App Check > Apps > Manage debug tokens**. Treat the token as
    a secret: keep it in `.env` and never commit it.
 
-5. Click **Prepare on-device model** once to download Gemini Nano.
+5. If the app says the on-device model is not downloaded yet, click
+   **Download model** once while online.
+
+To try the offline app shell locally, run `npm run build` and
+`npm run preview`. The service worker is only registered in production
+builds.
 
 For a hosted build, create a reCAPTCHA Enterprise key for your domain,
 register it as the App Check provider and set
@@ -77,12 +117,18 @@ server on localhost and is left out of production builds.
 ## Project layout
 
 ```
+index.html        The app: capture view and report view
+bench.html        Routing bench, a developer page for testing each route
+vite.config.ts    Build config and the app shell service worker
 src/
+  app.ts          State, capture and sync pipeline, rendering
+  plan.ts         SVG floor plan, pins and heat map
+  report.ts       Printable report
+  store.ts        IndexedDB: findings, routing log, site name
   firebase.ts     Firebase app, App Check and the single getAI() call
   ai/models.ts    One model instance per routing decision
   ai/schema.ts    Shared JSON schemas, prompts and output validation
   ai/run.ts       Timed model calls that record which tier answered
-  main.ts         Routing bench UI
 ```
 
 ## Limitations
@@ -92,6 +138,10 @@ src/
   model, so only the cloud path works there.
 - The first use downloads the on-device model, which needs an unmetered
   connection.
+- One inspection at a time, on a built-in demo floor plan. Pins are placed
+  by the inspector; the model does not locate findings.
+- Severity is a model's suggestion and needs an inspector's review.
+- No photos or voice input yet.
 
 ## License
 
