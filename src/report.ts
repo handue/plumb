@@ -57,7 +57,8 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
   const stamp = el(
     "p",
     complete ? "stamp stamp-ready" : "stamp stamp-draft",
-    complete ? "Ready" : "Draft",
+    // Complete means every finding has a severity, not that it was signed off.
+    complete ? "Ready for review" : "Draft",
   );
   header.append(titles, stamp);
 
@@ -132,9 +133,15 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
     }, null);
     const item = el("li");
     item.dataset.key = worst ? worst.toLowerCase() : "draft";
+    // Severity in words as well as in the dot's color.
+    const level = worst
+      ? inArea.length === 1
+        ? worst.toLowerCase()
+        : `worst: ${worst.toLowerCase()}`
+      : "not reviewed";
     item.append(
       el("b", undefined, area.name),
-      el("span", undefined, plural(inArea.length, "finding")),
+      el("span", undefined, `${plural(inArea.length, "finding")} (${level})`),
     );
     areaList.append(item);
   }
@@ -152,7 +159,7 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
 
     const body = el("div", "paper-finding");
     const lead = el("p");
-    lead.append(el("b", undefined, `${finding.seq}. ${areaName(finding)}. `));
+    lead.append(el("b", undefined, `${areaName(finding)}. `));
     if (finding.polish) {
       lead.append(finding.polish.sentence);
     } else if (finding.extraction) {
@@ -185,7 +192,10 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
       body.append(strip);
     }
 
-    item.append(chip, body);
+    // The list is sorted by severity, so the capture number sits to the side.
+    const key = el("div", "paper-key");
+    key.append(chip, el("span", "paper-ref", `Finding ${finding.seq}`));
+    item.append(key, body);
     list.append(item);
   }
   paper.append(list);
@@ -221,5 +231,11 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
       : []),
     "Severity is a model's suggestion. An inspector should review this report before it is sent.",
   ];
-  paper.append(el("p", "paper-foot", provenance.join(" ")));
+  paper.append(
+    el("h2", "paper-heading paper-heading-small", "How this report was produced"),
+    el("p", "paper-foot", provenance.join(" ")),
+  );
+  const sign = el("p", "paper-sign");
+  sign.append(el("span", undefined, "Reviewed by"), el("span", undefined, "Date"));
+  paper.append(sign);
 }

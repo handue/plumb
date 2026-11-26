@@ -1,9 +1,18 @@
+/** Units a note can give a size in, and their length in centimeters. */
+export const SIZE_UNITS = { mm: 0.1, cm: 1, m: 100, in: 2.54, ft: 30.48 } as const;
+
+export type SizeUnit = keyof typeof SIZE_UNITS;
+
 /** What the capture step extracts from an inspector's note. */
 export interface Extraction {
   /** Name of the place on the site, as the note calls it. Free text. */
   area: string;
   item: string;
   issue: string;
+  /** The size as the note gave it, read by the model. */
+  size_value?: number | null;
+  size_unit?: SizeUnit | null;
+  /** Centimeters, computed by the app from the value and unit above. */
   size_cm: number | null;
   water_related: boolean;
 }
@@ -13,7 +22,9 @@ export const GENERAL_AREA = "General";
 
 /**
  * One JSON Schema for both tiers: `responseConstraint` on-device and
- * `responseJsonSchema` in the cloud.
+ * `responseJsonSchema` in the cloud. The model reports the number and the
+ * unit; the app does the arithmetic. Asked to convert, the on-device model
+ * sometimes got it wrong (2 m became 2000 cm).
  */
 export const EXTRACTION_SCHEMA = {
   type: "object",
@@ -21,29 +32,41 @@ export const EXTRACTION_SCHEMA = {
     area: { type: "string" },
     item: { type: "string" },
     issue: { type: "string" },
-    size_cm: { type: ["number", "null"] },
+    size_value: { type: ["number", "null"] },
+    size_unit: {
+      anyOf: [
+        { type: "string", enum: Object.keys(SIZE_UNITS) },
+        { type: "null" },
+      ],
+    },
     water_related: { type: "boolean" },
   },
-  required: ["area", "item", "issue", "size_cm", "water_related"],
+  required: [
+    "area",
+    "item",
+    "issue",
+    "size_value",
+    "size_unit",
+    "water_related",
+  ],
   additionalProperties: false,
 };
 
 /**
  * Wording and examples were tuned against the on-device model with a 30-note
- * test set across four visit types. The examples matter: without them the
- * model left sizes in meters as null and guessed a known area for notes that
- * named none.
+ * test set across four visit types.
  */
-export const EXTRACTION_INSTRUCTIONS = `You turn a site inspector's short note into JSON with five fields.
+export const EXTRACTION_INSTRUCTIONS = `You turn a site inspector's short note into JSON with six fields.
 area: the place on the site that the note names, two or three words at most. If the note names one of the known areas, copy that name exactly. If it names a different place, use the words from the note. Never pick a known area the note does not name. A surface or object (floor, wall, ceiling, door) is not a place. If the note names no place, use "${GENERAL_AREA}".
 item: the thing inspected.
 issue: what is wrong with it.
-size_cm: the size in centimeters as a number. Convert every unit: 1 m = 100 cm, 1 ft = 30.5 cm, 1 inch = 2.54 cm, 1 mm = 0.1 cm. Use null only when the note gives no size.
+size_value and size_unit: the size exactly as the note gives it. Copy the number and choose the unit: mm, cm, m, in or ft. Do not convert. Use null for both when the note gives no size.
 water_related: true only if the note mentions water, a leak, damp, wet, mold or dripping.
 Examples:
-Note: boiler room pipe lagging missing, 2 m run -> {"area":"Boiler room","item":"pipe lagging","issue":"missing","size_cm":200,"water_related":false}
-Note: crack in the wall about 10 inches long -> {"area":"${GENERAL_AREA}","item":"wall","issue":"crack","size_cm":25.4,"water_related":false}
-Note: stock room ceiling tile damp, 1.5 ft patch -> {"area":"Stock room","item":"ceiling tile","issue":"damp patch","size_cm":45.75,"water_related":true}
+Note: boiler room pipe lagging missing, 2 m run -> {"area":"Boiler room","item":"pipe lagging","issue":"missing","size_value":2,"size_unit":"m","water_related":false}
+Note: crack in the wall about 10 inches long -> {"area":"${GENERAL_AREA}","item":"wall","issue":"crack","size_value":10,"size_unit":"in","water_related":false}
+Note: stock room ceiling tile damp, 1.5 ft patch -> {"area":"Stock room","item":"ceiling tile","issue":"damp patch","size_value":1.5,"size_unit":"ft","water_related":true}
+Note: fire door closer broken -> {"area":"${GENERAL_AREA}","item":"fire door closer","issue":"broken","size_value":null,"size_unit":null,"water_related":false}
 Output JSON only.`;
 
 /** The per-call prompt: visit context first, then the note. */
@@ -145,16 +168,23 @@ export function parseExtraction(text: string): Extraction {
     typeof data.area !== "string" ||
     typeof data.item !== "string" ||
     typeof data.issue !== "string" ||
-    !(data.size_cm === null || typeof data.size_cm === "number") ||
+    !(data.size_value === null || typeof data.size_value === "number") ||
+    !(data.size_unit === null || (data.size_unit as string) in SIZE_UNITS) ||
     typeof data.water_related !== "boolean"
   ) {
     throw new Error("Model output does not match the extraction schema.");
   }
+  const value = data.size_value;
+  const unit = data.size_unit as SizeUnit | null;
+  // A size needs both parts, and a size of zero is no size.
+  const sized = value !== null && unit !== null && value > 0;
   return {
     area: data.area,
     item: data.item,
     issue: data.issue,
-    size_cm: data.size_cm,
+    size_value: sized ? value : null,
+    size_unit: sized ? unit : null,
+    size_cm: sized ? Math.round(value * SIZE_UNITS[unit] * 10) / 10 : null,
     water_related: data.water_related,
   };
 }

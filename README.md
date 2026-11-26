@@ -18,8 +18,8 @@ inference.
    check, or a custom type you name yourself.
 2. **Capture.** Type a short note such as `storage rack upright bent about 6
    inches near aisle 3`. The note is saved to IndexedDB first, then
-   structured into fields (`area`, `item`, `issue`, `size_cm`,
-   `water_related`) by the on-device model.
+   structured into fields (area, item, issue, size and unit, water flag) by
+   the on-device model.
 3. **Areas appear from your notes.** There is no fixed floor plan. The area
    each note names becomes a tile on the site map, marked "Created from
    note", and the finding is pinned inside it. If the model reads an area
@@ -93,21 +93,30 @@ snapshot, not a benchmark.
 
 | Field | Correct |
 |---|---|
-| Area (free text, matched after normalizing) | 97% |
+| Area (free text, matched after normalizing) | 93% |
 | Item | 100% |
-| Size in cm, including "no size" | 97% |
-| Water flag | 93% |
+| Size, including "no size" | 100% |
+| Water flag | 97% |
 | Valid JSON | 100% |
 
-Median latency was about 2.7 s per note and the 95th percentile about 4.1 s.
+Median latency was about 2.7 s per note and the 95th percentile about 3.4 s.
 The first on-device call after a page load can take around half a minute
 while Chrome loads the model into memory, so the app makes one warm-up call
 at startup and shows it in the routing log.
 
-Two things moved these numbers during tuning. Few-shot examples in the
-instructions fixed sizes given in meters, which the model had left empty.
-Leaving the JSON schema out of the model's input (the output is still
-constrained by it) cut latency by about a third.
+Three things moved these numbers during tuning:
+
+- Few-shot examples in the instructions. Without them the model left sizes
+  given in meters empty and guessed an area for notes that named none.
+- The model reports the number and the unit, and the app converts to
+  centimeters. Asked to convert, the model sometimes got the arithmetic wrong
+  (2 m became 2000 cm). Size accuracy went from 83% to 100%.
+- The JSON schema is left out of the model's input. The output is still
+  constrained by it, and latency dropped by about a third.
+
+The misses that remain are places named only as part of the item ("bar ice
+machine", "balcony railing"), which the model files under General. That is
+what the manual area controls are for.
 
 The cloud step uses `gemini-3.5-flash-lite` by default, because the larger
 models had a free quota of 20 requests a day when this was tested. Set
@@ -218,7 +227,7 @@ src/
   no sync between devices.
 - On-device capture takes a few seconds per note on a laptop, and longer on
   the first call after a page load.
-- "Sent to cloud while offline" counts the prompt text of this app's model
+- "Uploaded while offline" counts the prompt text of this app's model
   calls. It does not measure other network traffic.
 - No voice input.
 

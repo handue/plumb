@@ -22,6 +22,7 @@ import {
   parsePolish,
   PHOTO_PROMPT,
   SEVERITIES,
+  type Extraction,
   type Severity,
 } from "./ai/schema";
 import { computeKpis } from "./kpi";
@@ -171,6 +172,7 @@ const cardShownAt = new Map<string, number>();
 const polishedAt = new Map<string, number>();
 const CARD_IN_MS = 320;
 const POLISH_IN_MS = 620;
+const POLISH_FLASH_MS = 900;
 /** What the capture line says when it has nothing more specific to say. */
 let deviceNote = "";
 
@@ -651,7 +653,8 @@ function sync(retry: boolean): void {
     }
   }
   if (!isOnline()) return;
-  for (const finding of findings) {
+  // Newest first, so the cards at the top of the feed are the first to change.
+  for (const finding of [...findings].sort((a, b) => b.seq - a.seq)) {
     if (finding.status === "draft" && (retry || !finding.polishError)) {
       enqueue(polishQueue, "polish", finding.id, polish);
     }
@@ -1102,12 +1105,21 @@ photoRemove.addEventListener("click", () => {
 
 function describeNetwork(): string {
   if (isOnline()) {
-    return configured ? "Online: cloud polish on" : "Online: cloud not configured";
+    return configured ? "Online: Gemini in the cloud" : "Online: cloud not configured";
   }
   const label = simulated && navigator.onLine ? "Offline (simulated)" : "Offline";
   return availability === "available" && configured
-    ? `${label}: on-device only`
+    ? `${label}: Gemini Nano on device`
     : `${label}: notes saved, not structured`;
+}
+
+/** Writes the network line. It turns amber when the tier in use cannot work. */
+function paintNetwork(): void {
+  netText.textContent = describeNetwork();
+  const healthy = isOnline()
+    ? configured
+    : availability === "available" && configured;
+  document.body.toggleAttribute("data-degraded", !healthy);
 }
 
 let lostTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1116,7 +1128,7 @@ function applyNetwork(initial: boolean): void {
   const online = isOnline();
   const before = document.body.dataset.net;
   document.body.dataset.net = online ? "online" : "offline";
-  netText.textContent = describeNetwork();
+  paintNetwork();
 
   if (initial) return;
 
@@ -1127,6 +1139,14 @@ function applyNetwork(initial: boolean): void {
     wave.classList.remove("is-running");
     void wave.offsetWidth;
     wave.classList.add("is-running");
+    if (findings.some((finding) => finding.status === "draft")) {
+      feed.scrollTo({
+        top: 0,
+        behavior: matchMedia("(prefers-reduced-motion: reduce)").matches
+          ? "auto"
+          : "smooth",
+      });
+    }
     sync(true);
   } else if (before === "online" && !online) {
     clearTimeout(lostTimer);
@@ -1156,7 +1176,7 @@ window.addEventListener("offline", () => applyNetwork(false));
 
 async function refreshAvailability(): Promise<void> {
   availability = await onDeviceAvailability();
-  netText.textContent = describeNetwork();
+  paintNetwork();
   renderNotice();
   warmUp();
   await refreshAssist();
@@ -1316,6 +1336,27 @@ function actionButton(
   return button;
 }
 
+/** The fields the capture step extracted, as the model gave them. */
+function extractedFields(extraction: Extraction): HTMLDListElement {
+  const { area, item, issue, size_cm, size_value, size_unit, water_related } =
+    extraction;
+  const fields = el("dl", "fields");
+  fields.append(field("area", area), field("item", item), field("issue", issue));
+  if (size_cm !== null) {
+    // What the model read, then the centimeters the app computed from it.
+    fields.append(
+      field(
+        "size",
+        size_value != null && size_unit != null && size_unit !== "cm"
+          ? `${size_value} ${size_unit} = ${size_cm} cm`
+          : `${size_cm} cm`,
+      ),
+    );
+  }
+  fields.append(field("water_related", String(water_related)));
+  return fields;
+}
+
 /** Set when the card holding a focused Area dropdown may be rebuilt. */
 let releaseHeldCard = false;
 /** True while a card was kept as it was through a render and is out of date. */
@@ -1394,11 +1435,28 @@ function renderCard(finding: Finding): HTMLLIElement {
   toggle.setAttribute("aria-expanded", String(finding.id === selectedId));
   title.append(toggle);
   head.append(title);
-  const chip = el("span", "chip", finding.polish?.severity ?? "Draft");
-  chip.dataset.key = finding.polish
-    ? finding.polish.severity.toLowerCase()
-    : "draft";
+  const polishing = finding.status === "polishing";
+  const chip = el(
+    "span",
+    "chip",
+    polishing ? "Polishing" : (finding.polish?.severity ?? "Draft"),
+  );
+  chip.dataset.key = polishing
+    ? "cloud"
+    : finding.polish
+      ? finding.polish.severity.toLowerCase()
+      : "draft";
   head.append(chip);
+  // A short violet edge marks the card the cloud has just rewritten.
+  const flashAge = now - (polishedAt.get(finding.id) ?? -POLISH_FLASH_MS);
+  if (
+    finding.polish &&
+    flashAge < POLISH_FLASH_MS &&
+    !card.classList.contains("is-new")
+  ) {
+    card.classList.add("is-polished-now");
+    card.style.animationDelay = `-${Math.round(flashAge)}ms`;
+  }
   card.append(head);
 
   if (finding.polish) {
@@ -1419,17 +1477,7 @@ function renderCard(finding: Finding): HTMLLIElement {
     }
     card.append(body);
   } else if (finding.extraction) {
-    const { item, issue, size_cm, water_related } = finding.extraction;
-    const fields = el("dl", "fields");
-    fields.append(
-      field("area", finding.extraction.area),
-      field("item", item),
-      field("issue", issue),
-      field("size_cm", size_cm === null ? "null" : String(size_cm)),
-      field("water_related", String(water_related)),
-      field("severity", "waiting for cloud"),
-    );
-    card.append(fields);
+    card.append(extractedFields(finding.extraction));
   } else if (finding.status === "structuring") {
     const skeleton = el("div", "skeleton");
     skeleton.append(el("span"), el("span"), el("span"));
@@ -1438,6 +1486,10 @@ function renderCard(finding: Finding): HTMLLIElement {
   }
 
   card.append(el("p", "card-note", finding.note));
+  // On a polished card the captured fields stay available when it is open.
+  if (finding.polish && finding.extraction) {
+    card.append(extractedFields(finding.extraction));
+  }
 
   const attached = photosOf(finding.id);
   if (attached.length > 0) {
@@ -1867,7 +1919,17 @@ siteInput.addEventListener("change", () => {
 
 printButton.addEventListener("click", () => window.print());
 // Printing from the capture view still prints the report.
-window.addEventListener("beforeprint", drawReport);
+// The tab title becomes the suggested file name when saving as PDF.
+const appTitle = document.title;
+window.addEventListener("beforeprint", () => {
+  drawReport();
+  if (visit) {
+    document.title = `${preset().reportTitle} - ${visit.site || "Unnamed site"}`;
+  }
+});
+window.addEventListener("afterprint", () => {
+  document.title = appTitle;
+});
 window.addEventListener("hashchange", renderView);
 
 onStoreBlocked(() => {

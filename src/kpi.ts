@@ -77,7 +77,7 @@ export function computeKpis(findings: Finding[], log: CallRecord[]): Kpi[] {
     (record) => record.simulatedOffline && record.browserOnline,
   ).length;
   const simulatedNote = (count: number): string =>
-    count === 0 ? "" : ` (${count} with offline simulated)`;
+    count === 0 ? "" : ` (${count} simulated offline)`;
 
   const cloudPolish = calls.filter(
     (record) => record.tier === "in_cloud" && record.step === "polish",
@@ -103,12 +103,12 @@ export function computeKpis(findings: Finding[], log: CallRecord[]): Kpi[] {
     },
     {
       key: "offline-upload",
-      label: "Sent to cloud while offline",
+      label: "Uploaded while offline",
       value: formatBytes(offlineBytes),
       detail:
         offlineCalls === 0
           ? "No model calls made offline yet"
-          : `Prompt bytes, over ${plural(offlineCalls, "offline call")}${simulatedNote(simulatedCalls)}`,
+          : `Prompt bytes, ${plural(offlineCalls, "offline call")}${simulatedNote(simulatedCalls)}`,
     },
     {
       key: "cloud-calls",

@@ -18,7 +18,7 @@
       <div id="visit-bar" class="visit-bar" hidden>
         <label class="site">
           <span class="visually-hidden">Site name</span>
-          <input id="site" type="text" maxlength="80" autocomplete="off" spellcheck="false" />
+          <input id="site" type="text" placeholder="Site name" maxlength="80" autocomplete="off" spellcheck="false" />
         </label>
         <span id="visit-type" class="visit-type"></span>
       </div>
@@ -61,12 +61,11 @@
       <form id="setup-view" class="setup" autocomplete="off" hidden>
         <h1>Start a site visit</h1>
         <p class="setup-lead">
-          Plumb is built to work with no connection. Type short notes as you
-          walk the site. Each note is turned into fields on this device when
-          Chrome's on-device model is available, otherwise in the cloud once
-          you are online, and areas of the site appear as your notes mention
-          them. When you are back online, the cloud writes the report wording
-          and suggests a severity.
+          Type short notes as you walk the site. Each note becomes structured
+          fields on this device when Chrome's on-device model is available,
+          with no connection needed; without it, notes are saved here and
+          structured in the cloud once you are online. Back online, the cloud
+          writes the report wording and suggests a severity.
         </p>
 
         <label class="setup-field" for="setup-site">Site name</label>
@@ -80,11 +79,6 @@
 
         <fieldset class="setup-types">
           <legend>Visit type</legend>
-          <p class="hint">
-            The visit type sets suggested areas, the wording hint for the
-            on-device model, and the report headings. You can change areas at
-            any time.
-          </p>
           <div id="setup-presets" class="preset-list"></div>
         </fieldset>
 
@@ -99,8 +93,10 @@
           />
         </div>
 
-        <p id="setup-status" class="hint" role="status"></p>
-        <button type="submit" class="primary">Start visit</button>
+        <div class="setup-actions">
+          <button type="submit" class="primary">Start visit</button>
+          <p id="setup-status" class="hint" role="status"></p>
+        </div>
       </form>
 
       <div id="capture-view" class="workspace" hidden>
