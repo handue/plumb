@@ -71,7 +71,7 @@ export interface Photo {
   width: number;
   height: number;
   createdAt: string;
-  /** True if the on-device model read this photo to draft a note. */
+  /** True if this photo was given to the on-device model to draft a note. */
   readByModel?: boolean;
 }
 

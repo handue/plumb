@@ -252,8 +252,10 @@ function areaKey(name: string): string {
     .normalize("NFKC")
     .toLowerCase()
     .replace(/^the\s+/, "")
-    // A sign or decimal point before a digit tells "Level -1" from "Level 1".
-    .replace(/[-.](?=\d)/g, "\u0001")
+    // A minus sign or a decimal point tells "Level -1" from "Level 1" and
+    // "Bay 1.5" from "Bay 15". "Bay-3" and "No.4" still match "Bay 3", "No 4".
+    .replace(/(^|\s)-(?=\d)/g, "\u0001")
+    .replace(/(?<=\d)\.(?=\d)/g, "\u0001")
     .replace(/[^\p{L}\p{N}\u0001]+/gu, "");
   // A name made only of symbols still has to match itself.
   return key || name.trim().toLowerCase();
@@ -410,6 +412,8 @@ function enqueue(
       await task(id);
     } finally {
       pendingSteps.delete(key);
+      // The queue line reads pendingSteps, so draw it once the step is over.
+      renderFeed();
     }
   });
 }
@@ -557,8 +561,9 @@ async function polish(id: string): Promise<void> {
     // Refiled while the call was in flight: the sentence is for the old area.
     await saveFinding(current);
     render();
-    sync(false);
-    return;
+    // Run again in this queue slot: the step is still marked as pending, so
+    // sync() would skip it.
+    return polish(id);
   }
   if (!isOnline()) {
     // The app went offline while the call was in flight. The call is in the
@@ -628,15 +633,21 @@ async function addFinding(note: string): Promise<void> {
     areaSetByUser: false,
     polish: null,
     polishError: null,
-    noteFromPhoto: assist?.suggested ?? false,
+    // True only while the model's phrase is still part of the note.
+    noteFromPhoto: [assist?.draft, orphanDraft].some(
+      (draft) => typeof draft === "string" && note.includes(draft),
+    ),
   };
   // Save before any model call, so the note survives whatever happens next.
   await saveFinding(finding);
   findings.push(finding);
+  orphanDraft = null;
   if (assist) {
     const taken = assist;
+    // The note is already saved; do not let clearAssist touch the field.
+    taken.draft = null;
     clearAssist();
-    await storePhoto(finding.id, taken.image, generation, taken.suggested).catch(
+    await storePhoto(finding.id, taken.image, generation, taken.given).catch(
       (cause: unknown) => showFeedStatus(photoProblem(cause)),
     );
   }
@@ -736,11 +747,30 @@ async function attachFiles(findingId: string, files: File[]): Promise<void> {
 
 // --------------------------------------------------- photo assist (optional)
 
-/** A photo picked to start a finding from, and whether a note was drafted. */
-let assist: { image: ScaledImage; url: string; suggested: boolean } | null = null;
+/**
+ * A photo picked to start a finding from. `given` is true once the photo was
+ * handed to the on-device model; `draft` is the model's note, only if it was
+ * put into the note field.
+ */
+let assist: {
+  image: ScaledImage;
+  url: string;
+  given: boolean;
+  draft: string | null;
+} | null = null;
+/** A model draft still in the note field after its photo was discarded. */
+let orphanDraft: string | null = null;
 
 function clearAssist(): void {
-  if (assist) URL.revokeObjectURL(assist.url);
+  if (assist) {
+    URL.revokeObjectURL(assist.url);
+    if (assist.draft !== null) {
+      // An untouched draft goes with its photo. An edited one stays, and
+      // keeps its origin.
+      if (noteInput.value.trim() === assist.draft) noteInput.value = "";
+      else if (noteInput.value.includes(assist.draft)) orphanDraft = assist.draft;
+    }
+  }
   assist = null;
   assistRow.hidden = true;
   assistThumb.replaceChildren();
@@ -764,7 +794,12 @@ async function draftFromPhoto(file: File): Promise<void> {
     return;
   }
   if (generation !== startedIn) return;
-  const picked = { image, url: URL.createObjectURL(image.blob), suggested: false };
+  const picked: NonNullable<typeof assist> = {
+    image,
+    url: URL.createObjectURL(image.blob),
+    given: false,
+    draft: null,
+  };
   assist = picked;
   const thumb = el("img");
   thumb.src = picked.url;
@@ -776,11 +811,14 @@ async function draftFromPhoto(file: File): Promise<void> {
   assistRow.hidden = false;
 
   const simulatedOffline = simulated;
+  const data = await toBase64(image.blob);
+  // From here on the photo counts as given to the model, whatever comes back.
+  picked.given = true;
   const record = await run("photo", [
     PHOTO_PROMPT,
     {
       type: "inlineData",
-      inlineData: { data: await toBase64(image.blob), mimeType: "image/jpeg" },
+      inlineData: { data, mimeType: "image/jpeg" },
     },
   ]);
   if (generation !== startedIn) return;
@@ -796,9 +834,13 @@ async function draftFromPhoto(file: File): Promise<void> {
   }
   try {
     const suggestion = parsePhotoSuggestion(record.text);
-    picked.suggested = true;
-    if (noteInput.value.trim() === "") noteInput.value = suggestion.note;
-    assistText.textContent = `Suggested by Nano from the photo (${suggestion.category}): “${suggestion.note}”. Check it, add where it is, then add the finding. ${attach}`;
+    if (noteInput.value.trim() === "") {
+      noteInput.value = suggestion.note;
+      picked.draft = suggestion.note;
+      assistText.textContent = `Suggested by Nano from the photo (${suggestion.category}): “${suggestion.note}”. Check it, add where it is, then add the finding. ${attach}`;
+    } else {
+      assistText.textContent = `Suggested by Nano from the photo (${suggestion.category}): “${suggestion.note}”. Not inserted, because a note is already typed. ${attach}`;
+    }
     noteInput.focus();
   } catch {
     assistText.textContent = `The on-device model answered, but not with a usable note. Type the note yourself. ${attach}`;
@@ -1189,6 +1231,8 @@ function actionButton(
 
 /** Set when the card holding a focused Area dropdown may be rebuilt. */
 let releaseHeldCard = false;
+/** True while a card was kept as it was through a render and is out of date. */
+let heldStale = false;
 
 /** A select that files the finding under another area. */
 function areaSelect(finding: Finding): HTMLLabelElement {
@@ -1213,13 +1257,16 @@ function areaSelect(finding: Finding): HTMLLabelElement {
     if (select.value) void moveFinding(finding.id, select.value);
     else renderFeed();
   });
-  // A card kept alive for an open dropdown is stale: rebuild it on leaving.
+  // A card kept alive for an open dropdown is stale: rebuild it on leaving,
+  // but only once the click or key press that moved focus has finished, so
+  // the control being pressed is not replaced under the pointer.
   select.addEventListener("blur", () => {
-    queueMicrotask(() => {
-      if (!select.isConnected) return;
+    if (!heldStale) return;
+    setTimeout(() => {
+      if (!heldStale || document.activeElement === select) return;
       releaseHeldCard = true;
       renderFeed();
-    });
+    }, 250);
   });
   label.append(select);
   return label;
@@ -1419,6 +1466,7 @@ function renderFeed(): void {
       ? active.closest<HTMLLIElement>("li.card")
       : null;
   releaseHeldCard = false;
+  heldStale = held !== null;
 
   const newestFirst = [...findings].sort((a, b) => b.seq - a.seq);
   feed.replaceChildren(
@@ -1653,6 +1701,7 @@ clearDialog.addEventListener("close", () => {
     for (const id of [...photoUrls.keys()]) forgetPhotoUrl(id);
     photos.clear();
     clearAssist();
+    orphanDraft = null;
     await clearVisit();
     showFeedStatus();
     captureStatus.textContent = "";
@@ -1733,8 +1782,11 @@ window.addEventListener("beforeprint", drawReport);
 window.addEventListener("hashchange", renderView);
 
 onStoreBlocked(() => {
-  setupStatus.textContent =
+  // No view is shown yet at this point, so the notice bar carries it.
+  noticeText.textContent =
     "Plumb is open in another tab with an older version. Close that tab, then reload this one.";
+  noticeAction.hidden = true;
+  notice.hidden = false;
 });
 
 async function start(): Promise<void> {

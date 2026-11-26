@@ -215,7 +215,7 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
     ...(photoCount > 0
       ? [
           readPhotos > 0
-            ? `Photos were attached by the inspector. ${plural(readPhotos, "photo")} ${readPhotos === 1 ? "was" : "were"} read by the on-device model to draft a note; no photo was sent to the cloud.`
+            ? `Photos were attached by the inspector. ${plural(readPhotos, "photo")} ${readPhotos === 1 ? "was" : "were"} given to the on-device model to draft a note; no photo was sent to the cloud.`
             : "Photos were attached by the inspector and were not analyzed by a model.",
         ]
       : []),
