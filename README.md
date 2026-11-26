@@ -175,8 +175,13 @@ src/
 - Area names come from a small on-device model reading a short note. It can
   name the same place two ways or pick the wrong one, which is why areas can
   be renamed, merged and reassigned by hand.
-- Photos are evidence attached by the inspector. No model looks at them, and
-  they are not sent to the cloud.
+- Photos are evidence attached by the inspector and are never sent to the
+  cloud. By default no model looks at them.
+- "Draft from photo" is experimental and off by default. With
+  `VITE_PHOTO_ASSIST=true`, and only if Chrome reports image input as
+  available for the on-device model, a photo can be read on the device to
+  draft a note, which the inspector edits before adding. The draft is
+  labeled as suggested by Nano. Its accuracy has not been measured here.
 - Severity is a model's suggestion and needs an inspector's review.
 - One visit at a time, stored in this browser only. There is no account and
   no sync between devices.

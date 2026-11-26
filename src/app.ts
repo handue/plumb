@@ -8,6 +8,7 @@ import "./app.css";
 import { missingConfig } from "./firebase";
 import {
   onDeviceAvailability,
+  photoAvailability,
   prepareOnDeviceModel,
   ROUTE_MODES,
   type Route,
@@ -17,13 +18,21 @@ import {
   extractionPrompt,
   GENERAL_AREA,
   parseExtraction,
+  parsePhotoSuggestion,
   parsePolish,
+  PHOTO_PROMPT,
   SEVERITIES,
   type Severity,
 } from "./ai/schema";
 import { computeKpis } from "./kpi";
 import { createMap, type MapPin, type MapTile } from "./map";
-import { isQuotaError, scaleFile, scaleVideoFrame, type ScaledImage } from "./photos";
+import {
+  isQuotaError,
+  scaleFile,
+  scaleVideoFrame,
+  toBase64,
+  type ScaledImage,
+} from "./photos";
 import { CUSTOM_PRESET_ID, presetById, PRESETS, type Preset } from "./presets";
 import { renderReport } from "./report";
 import {
@@ -116,6 +125,12 @@ const printButton = byId<HTMLButtonElement>("print");
 const tabCapture = byId<HTMLAnchorElement>("tab-capture");
 const tabReport = byId<HTMLAnchorElement>("tab-report");
 const photoInput = byId<HTMLInputElement>("photo-input");
+const assistButton = byId<HTMLButtonElement>("photo-assist");
+const assistInput = byId<HTMLInputElement>("assist-input");
+const assistRow = byId<HTMLParagraphElement>("assist");
+const assistThumb = byId<HTMLSpanElement>("assist-thumb");
+const assistText = byId<HTMLSpanElement>("assist-text");
+const assistDrop = byId<HTMLButtonElement>("assist-drop");
 const cameraDialog = byId<HTMLDialogElement>("camera-dialog");
 const cameraVideo = byId<HTMLVideoElement>("camera-video");
 const cameraStatus = byId<HTMLParagraphElement>("camera-status");
@@ -163,6 +178,12 @@ let deviceNote = "";
 let generation = 0;
 
 const configured = missingConfig().length === 0;
+/**
+ * Experimental: the on-device model drafts a note from a photo. Off unless
+ * the build sets VITE_PHOTO_ASSIST=true, and hidden unless Chrome reports
+ * image input as available.
+ */
+const PHOTO_ASSIST = import.meta.env.VITE_PHOTO_ASSIST === "true";
 const encoder = new TextEncoder();
 
 /** Online for the app's purposes: the browser is online and the demo switch is off. */
@@ -607,10 +628,18 @@ async function addFinding(note: string): Promise<void> {
     areaSetByUser: false,
     polish: null,
     polishError: null,
+    noteFromPhoto: assist?.suggested ?? false,
   };
   // Save before any model call, so the note survives whatever happens next.
   await saveFinding(finding);
   findings.push(finding);
+  if (assist) {
+    const taken = assist;
+    clearAssist();
+    await storePhoto(finding.id, taken.image, generation, taken.suggested).catch(
+      (cause: unknown) => showFeedStatus(photoProblem(cause)),
+    );
+  }
   selectedId = finding.id;
   showCaptureStatus(`Finding ${seq} saved on this device.`);
   render();
@@ -650,6 +679,7 @@ async function storePhoto(
   findingId: string,
   image: ScaledImage,
   startedIn: number,
+  readByModel = false,
 ): Promise<Photo> {
   const wanted = (): boolean =>
     generation === startedIn &&
@@ -662,6 +692,7 @@ async function storePhoto(
     width: image.width,
     height: image.height,
     createdAt: new Date().toISOString(),
+    readByModel,
   };
   await savePhoto(photo);
   if (!wanted()) {
@@ -702,6 +733,85 @@ async function attachFiles(findingId: string, files: File[]): Promise<void> {
   showFeedStatus([done, problem].filter(Boolean).join(" "));
   render();
 }
+
+// --------------------------------------------------- photo assist (optional)
+
+/** A photo picked to start a finding from, and whether a note was drafted. */
+let assist: { image: ScaledImage; url: string; suggested: boolean } | null = null;
+
+function clearAssist(): void {
+  if (assist) URL.revokeObjectURL(assist.url);
+  assist = null;
+  assistRow.hidden = true;
+  assistThumb.replaceChildren();
+  assistText.textContent = "";
+}
+
+async function refreshAssist(): Promise<void> {
+  const ready =
+    PHOTO_ASSIST && configured && (await photoAvailability()) === "available";
+  assistButton.hidden = !ready;
+}
+
+async function draftFromPhoto(file: File): Promise<void> {
+  clearAssist();
+  const startedIn = generation;
+  let image: ScaledImage;
+  try {
+    image = await scaleFile(file);
+  } catch (cause) {
+    showCaptureStatus(photoProblem(cause));
+    return;
+  }
+  if (generation !== startedIn) return;
+  const picked = { image, url: URL.createObjectURL(image.blob), suggested: false };
+  assist = picked;
+  const thumb = el("img");
+  thumb.src = picked.url;
+  thumb.width = 40;
+  thumb.height = 40;
+  thumb.alt = "Photo picked for the next finding";
+  assistThumb.replaceChildren(thumb);
+  assistText.textContent = "Reading the photo on this device.";
+  assistRow.hidden = false;
+
+  const simulatedOffline = simulated;
+  const record = await run("photo", [
+    PHOTO_PROMPT,
+    {
+      type: "inlineData",
+      inlineData: { data: await toBase64(image.blob), mimeType: "image/jpeg" },
+    },
+  ]);
+  if (generation !== startedIn) return;
+  // Not tied to a finding yet, so it is logged without a number.
+  await logCall(0, "photo", "photo", PHOTO_PROMPT, record, simulatedOffline);
+  renderDock();
+  if (assist !== picked) return;
+
+  const attach = "The photo will be attached to the finding you add next.";
+  if (record.text === null) {
+    assistText.textContent = `The photo could not be read on this device: ${explain(record.error, "the model call failed")} Type the note yourself. ${attach}`;
+    return;
+  }
+  try {
+    const suggestion = parsePhotoSuggestion(record.text);
+    picked.suggested = true;
+    if (noteInput.value.trim() === "") noteInput.value = suggestion.note;
+    assistText.textContent = `Suggested by Nano from the photo (${suggestion.category}): “${suggestion.note}”. Check it, add where it is, then add the finding. ${attach}`;
+    noteInput.focus();
+  } catch {
+    assistText.textContent = `The on-device model answered, but not with a usable note. Type the note yourself. ${attach}`;
+  }
+}
+
+assistButton.addEventListener("click", () => assistInput.click());
+assistInput.addEventListener("change", () => {
+  const file = assistInput.files?.[0];
+  assistInput.value = "";
+  if (file) void draftFromPhoto(file);
+});
+assistDrop.addEventListener("click", clearAssist);
 
 /** The finding the hidden file input or the camera is collecting photos for. */
 let photoTargetId: string | null = null;
@@ -920,6 +1030,7 @@ async function refreshAvailability(): Promise<void> {
   availability = await onDeviceAvailability();
   netText.textContent = describeNetwork();
   renderNotice();
+  await refreshAssist();
 }
 
 function renderNotice(): void {
@@ -1242,6 +1353,7 @@ function renderCard(finding: Finding): HTMLLIElement {
   } else if (finding.status === "draft" && !isOnline()) {
     addStep("Polish waits for a connection");
   }
+  if (finding.noteFromPhoto) addStep("Note drafted from a photo on device", "on_device");
   if (attached.length > 0) addStep(plural(attached.length, "photo"));
   card.append(steps);
 
@@ -1393,7 +1505,7 @@ function renderDock(): void {
       if (className) td.className = className;
     };
     cell(new Date(record.at).toLocaleTimeString("en-US", { hourCycle: "h23" }));
-    cell(`#${record.findingSeq}`);
+    cell(record.findingSeq > 0 ? `#${record.findingSeq}` : "none yet");
     cell(STEP_LABELS[record.step]);
     cell(record.mode, "mode");
     cell(
@@ -1540,6 +1652,7 @@ clearDialog.addEventListener("close", () => {
     lastDeleted = null;
     for (const id of [...photoUrls.keys()]) forgetPhotoUrl(id);
     photos.clear();
+    clearAssist();
     await clearVisit();
     showFeedStatus();
     captureStatus.textContent = "";

@@ -1,5 +1,13 @@
-import { InferenceSource } from "firebase/ai";
-import { getModel, onDeviceAvailability, type Route } from "./models";
+import { InferenceSource, type Part } from "firebase/ai";
+import {
+  getModel,
+  onDeviceAvailability,
+  photoAvailability,
+  type Route,
+} from "./models";
+
+/** Routes that must be answered on the device or not at all. */
+const DEVICE_ONLY: Route[] = ["captureOffline", "photo"];
 
 /** One measured model call. Every value here is observed, never estimated. */
 export interface RunRecord {
@@ -28,9 +36,10 @@ const CLOUD_TIMEOUT_MS = 90_000;
  * route makes no model call, so it must not appear in the measured log.
  */
 export async function blocker(route: Route): Promise<string | null> {
-  if (route !== "captureOffline") return null;
+  if (!DEVICE_ONLY.includes(route)) return null;
 
-  const state = await onDeviceAvailability();
+  const state =
+    route === "photo" ? await photoAvailability() : await onDeviceAvailability();
   switch (state) {
     case "available":
       return null;
@@ -59,7 +68,10 @@ function withTimeout<T>(
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-export async function run(route: Route, prompt: string): Promise<RunRecord> {
+export async function run(
+  route: Route,
+  prompt: string | Array<string | Part>,
+): Promise<RunRecord> {
   const online = navigator.onLine;
   const started = performance.now();
   const finish = (
@@ -79,14 +91,14 @@ export async function run(route: Route, prompt: string): Promise<RunRecord> {
     const call = getModel(route).generateContent(prompt, {
       signal: controller.signal,
     });
-    const result = await (route === "captureOffline"
+    const result = await (DEVICE_ONLY.includes(route)
       ? call
       : withTimeout(call, CLOUD_TIMEOUT_MS, () => controller.abort()));
     const source = result.response.inferenceSource ?? null;
 
     // A device-only call answered by anything else is a routing fault, not a
     // result. Surface it instead of showing the output.
-    if (route === "captureOffline" && source !== InferenceSource.ON_DEVICE) {
+    if (DEVICE_ONLY.includes(route) && source !== InferenceSource.ON_DEVICE) {
       return finish({
         source,
         text: null,

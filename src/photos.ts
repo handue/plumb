@@ -74,6 +74,16 @@ export function scaleVideoFrame(video: HTMLVideoElement): Promise<ScaledImage> {
   return encode(video, video.videoWidth, video.videoHeight);
 }
 
+/** Base64 of a blob, without the data URL prefix. */
+export function toBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error ?? new Error("Read failed."));
+    reader.onload = () => resolve(String(reader.result).split(",")[1] ?? "");
+    reader.readAsDataURL(blob);
+  });
+}
+
 export function isQuotaError(cause: unknown): boolean {
   return cause instanceof DOMException && cause.name === "QuotaExceededError";
 }

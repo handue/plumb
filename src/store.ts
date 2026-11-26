@@ -58,6 +58,8 @@ export interface Finding {
   areaSetByUser: boolean;
   polish: Polish | null;
   polishError: string | null;
+  /** True if the note began as a draft the on-device model wrote from a photo. */
+  noteFromPhoto?: boolean;
 }
 
 /** A photo the inspector attached to a finding. Stored on this device. */
@@ -69,6 +71,8 @@ export interface Photo {
   width: number;
   height: number;
   createdAt: string;
+  /** True if the on-device model read this photo to draft a note. */
+  readByModel?: boolean;
 }
 
 /** One measured model call, kept for the routing log. */

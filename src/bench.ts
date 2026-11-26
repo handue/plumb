@@ -29,6 +29,7 @@ const ROUTE_LABELS: Record<Route, string> = {
   capture: "Structure, device preferred",
   captureOffline: "Structure, device only",
   polish: "Polish in cloud",
+  photo: "Photo assist, device only",
 };
 
 const SOURCE_LABELS = {

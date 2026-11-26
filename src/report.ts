@@ -65,6 +65,11 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
     (sum, finding) => sum + data.photosOf(finding.id).length,
     0,
   );
+  const readPhotos = findings.reduce(
+    (sum, finding) =>
+      sum + data.photosOf(finding.id).filter((photo) => photo.readByModel).length,
+    0,
+  );
   const meta = el(
     "p",
     "paper-meta",
@@ -208,7 +213,11 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
         ? "Report wording and severity were written by Gemini in the cloud. Both steps ran through Firebase AI Logic."
         : `Report wording and severity for ${polished.length} of ${plural(findings.length, "finding")} were written by Gemini in the cloud; the rest show the captured fields and are marked Not reviewed. Both steps ran through Firebase AI Logic.`,
     ...(photoCount > 0
-      ? ["Photos were attached by the inspector and were not analyzed by a model."]
+      ? [
+          readPhotos > 0
+            ? `Photos were attached by the inspector. ${plural(readPhotos, "photo")} ${readPhotos === 1 ? "was" : "were"} read by the on-device model to draft a note; no photo was sent to the cloud.`
+            : "Photos were attached by the inspector and were not analyzed by a model.",
+        ]
       : []),
     "Severity is a model's suggestion. An inspector should review this report before it is sent.",
   ];

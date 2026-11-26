@@ -8,6 +8,8 @@ import { getFirebase } from "../firebase";
 import {
   EXTRACTION_INSTRUCTIONS,
   EXTRACTION_SCHEMA,
+  PHOTO_INSTRUCTIONS,
+  PHOTO_SCHEMA,
   POLISH_INSTRUCTIONS,
   POLISH_SCHEMA,
 } from "./schema";
@@ -45,13 +47,32 @@ const captureCloud = {
   },
 };
 
-export type Route = "capture" | "captureOffline" | "polish";
+/**
+ * Image input needs its own session options: a session created for text only
+ * rejects images. Used by the optional photo assist, on the device only.
+ */
+export const PHOTO_ON_DEVICE: OnDeviceParams = {
+  createOptions: {
+    expectedInputs: [{ type: "text", languages: ["en"] }, { type: "image" }],
+    expectedOutputs: [{ type: "text", languages: ["en"] }],
+    initialPrompts: [
+      {
+        role: "system",
+        content: [{ type: "text", value: PHOTO_INSTRUCTIONS }],
+      },
+    ],
+  },
+  promptOptions: { responseConstraint: PHOTO_SCHEMA },
+};
+
+export type Route = "capture" | "captureOffline" | "polish" | "photo";
 
 /** Firebase AI Logic inference mode behind each route, as shown in the log. */
 export const ROUTE_MODES: Record<Route, string> = {
   capture: "PREFER_ON_DEVICE",
   captureOffline: "ONLY_ON_DEVICE",
   polish: "ONLY_IN_CLOUD",
+  photo: "ONLY_ON_DEVICE",
 };
 
 /** The slice of Chrome's Prompt API used to check model state. */
@@ -73,6 +94,20 @@ export async function onDeviceAvailability(): Promise<string> {
   if (!api) return "missing";
   try {
     return await api.availability(CAPTURE_ON_DEVICE.createOptions);
+  } catch {
+    return "unavailable";
+  }
+}
+
+/**
+ * State of the on-device model for image input, which can differ from the
+ * text-only state. Reads state only; runs no inference.
+ */
+export async function photoAvailability(): Promise<string> {
+  const api = promptApi();
+  if (!api) return "missing";
+  try {
+    return await api.availability(PHOTO_ON_DEVICE.createOptions);
   } catch {
     return "unavailable";
   }
@@ -116,6 +151,18 @@ export function getModel(route: Route): GenerativeModel {
       model = getGenerativeModel(ai, {
         mode: InferenceMode.ONLY_ON_DEVICE,
         onDeviceParams: CAPTURE_ON_DEVICE,
+      });
+      break;
+    case "photo":
+      if (!promptApi()) {
+        throw new Error(
+          "This browser has no on-device model, so a photo cannot be read on the device.",
+        );
+      }
+      // Photos never go to the cloud: there is no cloud configuration here.
+      model = getGenerativeModel(ai, {
+        mode: InferenceMode.ONLY_ON_DEVICE,
+        onDeviceParams: PHOTO_ON_DEVICE,
       });
       break;
     case "polish":

@@ -138,8 +138,14 @@
                 placeholder="Type what you see and where"
                 spellcheck="false"
               />
+              <button id="photo-assist" type="button" hidden>Draft from photo</button>
               <button type="submit" class="primary">Add finding</button>
             </div>
+            <p id="assist" class="assist" hidden>
+              <span id="assist-thumb" class="assist-thumb"></span>
+              <span id="assist-text"></span>
+              <button id="assist-drop" type="button" class="quiet">Discard photo</button>
+            </p>
             <p id="capture-status" class="hint" role="status"></p>
           </form>
         </section>
@@ -203,6 +209,7 @@
       </div>
     </main>
 
+    <input id="assist-input" type="file" accept="image/jpeg,image/png,image/webp" hidden />
     <input id="photo-input" type="file" accept="image/jpeg,image/png,image/webp,image/avif,image/gif" capture="environment" multiple hidden />
 
     <dialog id="clear-dialog" class="dialog" aria-labelledby="clear-title">

@@ -43,6 +43,54 @@ export function extractionPrompt(
   ].join("\n");
 }
 
+/** Defect categories the photo assist chooses from. */
+export const PHOTO_CATEGORIES = [
+  "crack or hole",
+  "water damage or leak",
+  "electrical",
+  "blocked or cluttered",
+  "broken or missing part",
+  "dirt, mold or pests",
+  "other",
+] as const;
+
+/** What the optional photo assist reads from one photo. */
+export interface PhotoSuggestion {
+  note: string;
+  category: (typeof PHOTO_CATEGORIES)[number];
+}
+
+export const PHOTO_SCHEMA = {
+  type: "object",
+  properties: {
+    note: { type: "string" },
+    category: { type: "string", enum: [...PHOTO_CATEGORIES] },
+  },
+  required: ["note", "category"],
+  additionalProperties: false,
+};
+
+export const PHOTO_INSTRUCTIONS = `You help a site inspector draft a note from one photo. Describe only what is visible. note is one short phrase an inspector would type, naming the thing and what is wrong with it, with no location. category is the kind of defect. If nothing looks wrong, say so in note and use "other". Output JSON only.`;
+
+export const PHOTO_PROMPT = "Draft the inspector's note for this photo.";
+
+/** Parses and validates model output. Throws if it does not match. */
+export function parsePhotoSuggestion(text: string): PhotoSuggestion {
+  const data: unknown = JSON.parse(text);
+  if (
+    !isRecord(data) ||
+    typeof data.note !== "string" ||
+    data.note.trim() === "" ||
+    !PHOTO_CATEGORIES.includes(data.category as PhotoSuggestion["category"])
+  ) {
+    throw new Error("Model output does not match the photo schema.");
+  }
+  return {
+    note: data.note.trim(),
+    category: data.category as PhotoSuggestion["category"],
+  };
+}
+
 export const SEVERITIES = ["Low", "Moderate", "High"] as const;
 
 export type Severity = (typeof SEVERITIES)[number];
