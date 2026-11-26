@@ -89,6 +89,7 @@ const viewTabs = byId<HTMLElement>("views");
 const queueText = byId<HTMLParagraphElement>("queue");
 const netText = byId<HTMLSpanElement>("net-text");
 const simulateSwitch = byId<HTMLInputElement>("simulate");
+const themeButton = byId<HTMLButtonElement>("theme");
 const notice = byId<HTMLDivElement>("notice");
 const noticeText = byId<HTMLParagraphElement>("notice-text");
 const noticeAction = byId<HTMLButtonElement>("notice-action");
@@ -1099,6 +1100,36 @@ photoRemove.addEventListener("click", () => {
     render();
     restoreFeedFocus();
   });
+});
+
+// --------------------------------------------------------------------- theme
+
+const THEME_KEY = "plumb.theme";
+const schemeMeta = document.querySelector<HTMLMetaElement>(
+  'meta[name="color-scheme"]',
+);
+
+/**
+ * Dark is the default: it suits the dim places inspections happen in. Light
+ * is for daylight sites. The choice is kept on this device.
+ */
+function applyTheme(light: boolean): void {
+  if (light) document.documentElement.dataset.theme = "light";
+  else delete document.documentElement.dataset.theme;
+  if (schemeMeta) schemeMeta.content = light ? "light" : "dark";
+  // The button names the theme it switches to.
+  themeButton.textContent = light ? "Dark theme" : "Light theme";
+}
+
+applyTheme(document.documentElement.dataset.theme === "light");
+themeButton.addEventListener("click", () => {
+  const light = document.documentElement.dataset.theme !== "light";
+  applyTheme(light);
+  try {
+    localStorage.setItem(THEME_KEY, light ? "light" : "dark");
+  } catch {
+    // Storage can be blocked. The theme still applies for this visit.
+  }
 });
 
 // ------------------------------------------------------------------- network

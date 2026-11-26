@@ -424,6 +424,11 @@ body[data-degraded][data-net="online"] .bars rect {
   fill: var(--moderate);
 }
 
+.theme-switch {
+  flex: none;
+  white-space: nowrap;
+}
+
 .demo-switch {
   display: flex;
   align-items: center;

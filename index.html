@@ -10,6 +10,14 @@
     />
     <title>Plumb: offline-first site visit capture</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <script>
+      // Applied before the first paint, so a saved light theme does not flash dark.
+      try {
+        if (localStorage.getItem("plumb.theme") === "light") {
+          document.documentElement.dataset.theme = "light";
+        }
+      } catch {}
+    </script>
   </head>
   <body data-net="online" data-view="setup">
     <header class="topbar">
@@ -41,6 +49,8 @@
         </svg>
         <span id="net-text"></span>
       </p>
+
+      <button id="theme" type="button" class="quiet theme-switch"></button>
 
       <label class="demo-switch">
         <input id="simulate" type="checkbox" role="switch" />

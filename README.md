@@ -43,6 +43,9 @@ while offline, cloud polish calls, median on-device latency) are counted from
 that log and from the stored findings. Nothing on the screen is a
 placeholder.
 
+The app is dark by default, which suits the dim places inspections happen
+in, and has a light theme for daylight sites. The choice is remembered.
+
 The **Simulate offline** switch is a demo control: it forces device-only
 calls and holds cloud sync, so the offline path can be shown without leaving
 the network. Calls made with it on are marked "offline (simulated)" in the
