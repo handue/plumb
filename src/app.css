@@ -1881,6 +1881,27 @@ th {
 }
 
 @media print {
+  /* The page itself is paper, including the margins around the report. */
+  :root {
+    color-scheme: light;
+    background: #fff;
+  }
+
+  .paper-findings li {
+    grid-template-columns: 7rem 1fr;
+    gap: 1rem;
+  }
+
+  .paper-foot,
+  .paper-summary,
+  .paper-photos img {
+    break-inside: avoid;
+  }
+
+  .paper-heading {
+    break-after: avoid;
+  }
+
   body {
     display: block;
     height: auto;

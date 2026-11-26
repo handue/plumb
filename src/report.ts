@@ -157,7 +157,7 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
       lead.append(finding.polish.sentence);
     } else if (finding.extraction) {
       const { item: what, issue, size_cm } = finding.extraction;
-      const text = `${what}: ${issue}${size_cm === null ? "" : `, about ${size_cm} cm`}.`;
+      const text = `${what}: ${issue}${size_cm === null ? "" : `, about ${Math.round(size_cm * 10) / 10} cm`}.`;
       lead.append(text.charAt(0).toUpperCase() + text.slice(1));
     } else {
       lead.append("Note not structured yet.");
