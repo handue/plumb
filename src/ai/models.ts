@@ -47,6 +47,13 @@ const captureCloud = {
 
 export type Route = "capture" | "captureOffline" | "polish";
 
+/** Firebase AI Logic inference mode behind each route, as shown in the log. */
+export const ROUTE_MODES: Record<Route, string> = {
+  capture: "PREFER_ON_DEVICE",
+  captureOffline: "ONLY_ON_DEVICE",
+  polish: "ONLY_IN_CLOUD",
+};
+
 /** The slice of Chrome's Prompt API used to check model state. */
 interface PromptApi {
   availability(options?: unknown): Promise<string>;

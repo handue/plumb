@@ -4,85 +4,157 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <title>Plumb: routing bench</title>
-    <link rel="stylesheet" href="/src/style.css" />
+    <meta
+      name="description"
+      content="Plumb captures inspection findings with no connection, using an on-device model, and turns them into a report once you are back online."
+    />
+    <title>Plumb: offline-first inspection capture</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
-  <body>
-    <div class="topbar">
+  <body data-net="online" data-view="capture">
+    <header class="topbar">
       <span class="wordmark">Plumb</span>
-      <span class="topbar-note">Developer tools</span>
-    </div>
 
-    <header class="masthead">
-      <h1>Routing bench</h1>
-      <p class="lede">
-        Checks that a note can be structured on this device with no network,
-        and polished in the cloud once there is one. Every row in the log is a
-        real call, timed in this browser.
+      <label class="site">
+        <span class="visually-hidden">Site name</span>
+        <input id="site" type="text" maxlength="80" autocomplete="off" spellcheck="false" />
+      </label>
+
+      <nav class="views" aria-label="View">
+        <a id="tab-capture" href="#capture">Capture</a>
+        <a id="tab-report" href="#report">Report</a>
+      </nav>
+
+      <span class="spacer"></span>
+
+      <p id="net-status" class="net" role="status">
+        <svg class="bars" viewBox="0 0 26 20" width="26" height="20" aria-hidden="true">
+          <rect x="0" y="14" width="5" height="6" rx="1" />
+          <rect x="7" y="10" width="5" height="10" rx="1" />
+          <rect x="14" y="5" width="5" height="15" rx="1" />
+          <rect x="21" y="0" width="5" height="20" rx="1" />
+        </svg>
+        <span id="net-text"></span>
       </p>
+
+      <label class="demo-switch">
+        <input id="simulate" type="checkbox" role="switch" />
+        <span class="switch-track" aria-hidden="true"></span>
+        <span class="switch-text">
+          Simulate offline
+          <small>Demo control</small>
+        </span>
+      </label>
     </header>
 
-    <main class="bench">
-      <section class="sheet" aria-labelledby="env-title">
-        <h2 id="env-title">This browser</h2>
-        <dl id="env" class="facts"></dl>
-        <p id="setup" class="notice" hidden></p>
-      </section>
+    <div id="notice" class="notice" hidden>
+      <p id="notice-text"></p>
+      <button id="notice-action" type="button" hidden></button>
+    </div>
 
-      <section class="sheet" aria-labelledby="run-title">
-        <h2 id="run-title">Run a call</h2>
+    <main>
+      <div id="capture-view" class="workspace">
+        <section class="panel plan-panel" aria-labelledby="plan-title">
+          <div class="panel-head">
+            <h2 id="plan-title">Floor plan</h2>
+            <p id="plan-hint" class="hint" role="status"></p>
+            <ul class="legend" aria-label="Pin colors">
+              <li data-key="draft">Draft</li>
+              <li data-key="low">Low</li>
+              <li data-key="moderate">Moderate</li>
+              <li data-key="high">High</li>
+            </ul>
+          </div>
 
-        <div class="step">
-          <button id="prepare" type="button">Prepare on-device model</button>
-          <p id="prepare-status" class="hint" role="status">
-            Downloads Gemini Nano if this browser does not have it yet.
+          <div class="plan-stage">
+            <svg id="plan" class="plan" role="group" aria-label="Floor plan with finding pins"></svg>
+            <div id="wave" class="wave" aria-hidden="true"></div>
+          </div>
+
+          <form id="capture-form" class="capture" autocomplete="off">
+            <label for="note">New finding</label>
+            <div class="capture-row">
+              <input
+                id="note"
+                type="text"
+                maxlength="300"
+                placeholder="Type what you see, for example: water stain on bathroom ceiling"
+                spellcheck="false"
+              />
+              <button type="submit" class="primary">Add finding</button>
+            </div>
+            <p id="capture-status" class="hint" role="status"></p>
+          </form>
+        </section>
+
+        <section class="panel feed-panel" aria-labelledby="feed-title">
+          <div class="panel-head">
+            <h2 id="feed-title">Findings</h2>
+            <p id="feed-count" class="hint"></p>
+            <button id="clear" type="button" class="quiet" hidden>New inspection</button>
+          </div>
+          <p id="feed-status" class="feed-status" role="status" hidden></p>
+          <div id="feed-empty" class="empty">
+            <p>
+              No findings yet. Type a short note below the plan. It is saved
+              first, then structured into fields on this device, with or
+              without a connection.
+            </p>
+            <p class="empty-label">Notes to try</p>
+            <ul id="examples" class="examples"></ul>
+          </div>
+          <ol id="feed" class="feed"></ol>
+        </section>
+
+        <section class="panel log-panel" aria-labelledby="log-title">
+          <div class="panel-head">
+            <h2 id="log-title">Routing log</h2>
+            <p id="log-summary" class="hint"></p>
+            <a class="quiet" href="/bench.html">Routing bench</a>
+          </div>
+          <p id="log-empty" class="hint">
+            Every model call appears here with the tier that answered and the
+            time it took, measured in this browser.
           </p>
-        </div>
+          <div class="scroll">
+            <table id="log" hidden>
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Finding</th>
+                  <th scope="col">Step</th>
+                  <th scope="col">Inference mode</th>
+                  <th scope="col">Answered by</th>
+                  <th scope="col" class="num">Latency</th>
+                  <th scope="col">Network</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
 
-        <label for="note">Inspector's note</label>
-        <textarea id="note" rows="3" spellcheck="false">
-kitchen outlet next to sink has no gfci</textarea
-        >
-
-        <div class="actions">
-          <button id="run-capture" type="button" data-route="capture">
-            Structure, device preferred
-          </button>
-          <button id="run-offline" type="button" data-route="captureOffline">
-            Structure, device only
-          </button>
-          <button id="run-polish" type="button" data-route="polish">
-            Polish in cloud
-          </button>
+      <div id="report-view" class="report-view" hidden>
+        <div class="report-tools">
+          <a href="#capture" class="button">Back to capture</a>
+          <button id="print" type="button" class="primary">Print or save as PDF</button>
         </div>
-        <p id="run-status" class="status" role="status"></p>
-        <p class="hint">
-          To test without a network, load this page, switch DevTools to
-          Offline, then run "Structure, device only".
-        </p>
-      </section>
-
-      <section class="sheet log" aria-labelledby="log-title">
-        <h2 id="log-title">Measured calls</h2>
-        <p id="log-empty" class="hint">No calls yet. Run one above.</p>
-        <div class="scroll">
-          <table id="log" hidden>
-            <thead>
-              <tr>
-                <th scope="col">Time</th>
-                <th scope="col">Route</th>
-                <th scope="col">Answered by</th>
-                <th scope="col" class="num">Latency</th>
-                <th scope="col">Network</th>
-                <th scope="col">Result</th>
-              </tr>
-            </thead>
-            <tbody></tbody>
-          </table>
-        </div>
-      </section>
+        <article id="paper" class="paper" aria-label="Inspection report"></article>
+      </div>
     </main>
 
-    <script type="module" src="/src/main.ts"></script>
+    <dialog id="clear-dialog" class="dialog" aria-labelledby="clear-title">
+      <form method="dialog">
+        <h2 id="clear-title">Start a new inspection?</h2>
+        <p id="clear-text"></p>
+        <div class="dialog-actions">
+          <button value="cancel" type="submit">Keep findings</button>
+          <button value="confirm" type="submit" class="danger">Delete and start new</button>
+        </div>
+      </form>
+    </dialog>
+
+    <script type="module" src="/src/app.ts"></script>
   </body>
 </html>

@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <title>Plumb: routing bench</title>
+    <link rel="stylesheet" href="/src/bench.css" />
+  </head>
+  <body>
+    <div class="topbar">
+      <span class="wordmark">Plumb</span>
+      <span class="topbar-note">Developer tools</span>
+    </div>
+
+    <header class="masthead">
+      <h1>Routing bench</h1>
+      <p class="lede">
+        Checks that a note can be structured on this device with no network,
+        and polished in the cloud once there is one. Every row in the log is a
+        real call, timed in this browser.
+      </p>
+    </header>
+
+    <main class="bench">
+      <section class="sheet" aria-labelledby="env-title">
+        <h2 id="env-title">This browser</h2>
+        <dl id="env" class="facts"></dl>
+        <p id="setup" class="notice" hidden></p>
+      </section>
+
+      <section class="sheet" aria-labelledby="run-title">
+        <h2 id="run-title">Run a call</h2>
+
+        <div class="step">
+          <button id="prepare" type="button">Prepare on-device model</button>
+          <p id="prepare-status" class="hint" role="status">
+            Downloads Gemini Nano if this browser does not have it yet.
+          </p>
+        </div>
+
+        <label for="note">Inspector's note</label>
+        <textarea id="note" rows="3" spellcheck="false">
+kitchen outlet next to sink has no gfci</textarea
+        >
+
+        <div class="actions">
+          <button id="run-capture" type="button" data-route="capture">
+            Structure, device preferred
+          </button>
+          <button id="run-offline" type="button" data-route="captureOffline">
+            Structure, device only
+          </button>
+          <button id="run-polish" type="button" data-route="polish">
+            Polish in cloud
+          </button>
+        </div>
+        <p id="run-status" class="status" role="status"></p>
+        <p class="hint">
+          To test without a network, load this page, switch DevTools to
+          Offline, then run "Structure, device only".
+        </p>
+      </section>
+
+      <section class="sheet log" aria-labelledby="log-title">
+        <h2 id="log-title">Measured calls</h2>
+        <p id="log-empty" class="hint">No calls yet. Run one above.</p>
+        <div class="scroll">
+          <table id="log" hidden>
+            <thead>
+              <tr>
+                <th scope="col">Time</th>
+                <th scope="col">Route</th>
+                <th scope="col">Answered by</th>
+                <th scope="col" class="num">Latency</th>
+                <th scope="col">Network</th>
+                <th scope="col">Result</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <script type="module" src="/src/bench.ts"></script>
+  </body>
+</html>
