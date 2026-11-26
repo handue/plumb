@@ -110,6 +110,10 @@
   color: #fff;
 }
 
+:root[data-theme="light"] .rail-call b {
+  color: color-mix(in srgb, var(--tone) 72%, var(--ink));
+}
+
 /* Offline on paper: the color drains, the sheet does not go dark. */
 :root[data-theme="light"][data-theme] body[data-net="offline"] .tiles {
   filter: grayscale(1);
@@ -534,9 +538,10 @@ main {
 .workspace {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(22rem, 1fr);
-  grid-template-rows: minmax(0, 1fr) 11rem;
+  grid-template-rows: minmax(0, 1fr) auto 11rem;
   grid-template-areas:
     "map feed"
+    "rail rail"
     "dock dock";
   gap: 0.75rem;
   height: 100%;
@@ -559,8 +564,222 @@ main {
   grid-area: feed;
 }
 
+.rail {
+  grid-area: rail;
+}
+
 .dock {
   grid-area: dock;
+}
+
+/* With no signal the map and the findings lose most of their color, and the
+   area tiles lose all of it. It returns with the sync wave. */
+.map-panel,
+.feed-panel {
+  transition: filter 900ms 150ms;
+}
+
+/* The rail and the figures keep their color: they are the record of which
+   tier did the work. */
+[data-net="offline"] .map-panel,
+[data-net="offline"] .feed-panel {
+  filter: saturate(0.3);
+  transition-delay: 0ms;
+}
+
+.sweep {
+  position: fixed;
+  z-index: 5;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.sweep::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 28vw;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in srgb, var(--ink) 16%, transparent) 55%,
+    color-mix(in srgb, var(--ink) 34%, transparent) 96%,
+    transparent
+  );
+  opacity: 0;
+  transform: translateX(-30vw);
+}
+
+.sweep.is-running::before {
+  animation: sweep 900ms cubic-bezier(0.3, 0, 0.2, 1) both;
+}
+
+@keyframes sweep {
+  from {
+    opacity: 1;
+    transform: translateX(-30vw);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(102vw);
+  }
+}
+
+/* ----------------------------------------------------------------------- rail */
+
+/* On a short window the two lanes share one row, so the map keeps its height. */
+@media (min-width: 62.01rem) and (max-height: 56rem) {
+  .rail {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    column-gap: 1.25rem;
+  }
+
+  .map-stage {
+    min-height: 9rem;
+  }
+}
+
+.rail {
+  display: grid;
+  gap: 0.375rem;
+  padding: 0.5rem 1.25rem;
+}
+
+.rail-lane {
+  --tone: var(--device);
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  min-width: 0;
+}
+
+.rail-lane[data-tier="in_cloud"] {
+  --tone: var(--cloud);
+}
+
+.rail-label {
+  flex: none;
+  width: 5.25rem;
+  color: var(--tone);
+  font: 600 0.9375rem/1.2 var(--condensed);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+/* The lane is a line the calls sit on. While a call is in flight it runs. */
+.rail-track {
+  position: relative;
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.375rem;
+  min-width: 0;
+  min-height: 1.75rem;
+  overflow: hidden;
+  /* A pill cut by the left edge fades out, so half a number is never read. */
+  mask-image: linear-gradient(90deg, transparent, #000 3.5rem);
+  background: linear-gradient(
+      color-mix(in srgb, var(--tone) 38%, transparent),
+      color-mix(in srgb, var(--tone) 38%, transparent)
+    )
+    center / 100% 1px no-repeat;
+}
+
+.rail-lane.is-busy .rail-track {
+  background: linear-gradient(90deg, var(--tone) 10px, transparent 10px) 0 center /
+    22px 2px repeat-x;
+  animation: rail-run 700ms linear infinite;
+}
+
+@keyframes rail-run {
+  to {
+    background-position: 22px center;
+  }
+}
+
+.rail-call {
+  display: flex;
+  flex: none;
+  align-items: baseline;
+  gap: 0.375rem;
+  padding: 0.125rem 0.625rem;
+  background: color-mix(in srgb, var(--tone) 16%, var(--sheet));
+  border: 1px solid color-mix(in srgb, var(--tone) 55%, transparent);
+  border-radius: 99px;
+  color: var(--ink);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.rail-call b {
+  color: var(--tone);
+}
+
+.rail-call[data-step="warmup"] {
+  background: var(--sheet);
+  border-style: dashed;
+}
+
+.rail-call[data-failed] {
+  --tone: var(--high);
+}
+
+/* A new call rides in along its lane. */
+.rail-call.is-new {
+  animation: rail-in 720ms var(--ease-out) both;
+}
+
+@keyframes rail-in {
+  from {
+    opacity: 0;
+    transform: translateX(-46vw);
+  }
+  25% {
+    opacity: 1;
+  }
+}
+
+.queue-count {
+  display: inline-block;
+}
+
+.queue-count.is-tick {
+  animation: queue-tick 420ms var(--ease-out) both;
+}
+
+@keyframes queue-tick {
+  from {
+    opacity: 0;
+    transform: translateY(-0.7em);
+  }
+}
+
+/* Model output while it is still arriving. */
+.card-stream {
+  min-height: 1.5em;
+  margin-top: 0.5rem;
+  overflow-wrap: anywhere;
+}
+
+.card-stream {
+  color: var(--device);
+  font: 0.8125rem/1.5 var(--mono);
+}
+
+.card-stream::after {
+  content: "";
+  display: inline-block;
+  width: 0.5em;
+  height: 1em;
+  margin-left: 0.125em;
+  background: currentColor;
+  vertical-align: text-bottom;
+  animation: blink 600ms ease-in-out infinite alternate;
 }
 
 .panel-head {
@@ -2052,6 +2271,7 @@ th {
     grid-template-areas:
       "map"
       "feed"
+      "rail"
       "dock";
     height: auto;
   }
@@ -2159,6 +2379,7 @@ th {
   }
 
   .topbar,
+  .sweep,
   .notice,
   .report-tools,
   #capture-view,

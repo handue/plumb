@@ -37,6 +37,12 @@ inference.
    browser. It is stamped "Ready for review" once every finding has a severity
    from the cloud model; until then it is stamped "Draft".
 
+A routing rail draws every model call on one of two lanes, "On device" or
+"Cloud", with its measured latency, so the split can be read at a glance.
+While a note is being structured on the device, the card shows the model's
+JSON as it is written. When the signal drops, the map and the findings lose
+their color, and it returns with a wave on reconnect.
+
 A routing log shows every model call: the inference mode it was made with,
 the tier that answered, the measured latency and the network state. The
 figures next to it (fields extracted offline, prompt bytes sent to the cloud
@@ -199,6 +205,7 @@ src/
   map.ts          Site map: area tiles, pins and heat colors
   presets.json    Visit types
   photos.ts       Photo downscaling
+  rail.ts         Routing rail: calls on the device and cloud lanes
   kpi.ts          Figures counted from the routing log
   report.ts       Printable report
   store.ts        IndexedDB: visit, areas, findings, photos, routing log

@@ -69,9 +69,14 @@ function withTimeout<T>(
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+/**
+ * With `onText`, the call is streamed and `onText` receives the answer so far
+ * each time more of it arrives. The record is the same either way.
+ */
 export async function run(
   route: Route,
   prompt: string | Array<string | Part>,
+  onText?: (soFar: string) => void,
 ): Promise<RunRecord> {
   const online = navigator.onLine;
   const started = performance.now();
@@ -89,13 +94,35 @@ export async function run(
     // Aborting stops a cloud request that is still waiting to be sent. The
     // SDK does not pass the signal to the on-device model.
     const controller = new AbortController();
-    const call = getModel(route).generateContent(prompt, {
-      signal: controller.signal,
-    });
+    const model = getModel(route);
+    // Set once the call is over, so a stream that outlives a timeout (the SDK
+    // cannot abort an on-device one) stops reporting text for a dead call.
+    let settled = false;
+    const call = onText
+      ? (async () => {
+          const streamed = await model.generateContentStream(prompt, {
+            signal: controller.signal,
+          });
+          // The stream's own error is the one to surface; this copy of it
+          // must not become an unhandled rejection.
+          streamed.response.catch(() => undefined);
+          let soFar = "";
+          for await (const chunk of streamed.stream) {
+            if (settled) break;
+            soFar += chunk.text();
+            onText(soFar);
+          }
+          return { response: await streamed.response };
+        })()
+      : model.generateContent(prompt, { signal: controller.signal });
     // A device-only call gets a longer limit, above the measured cold load,
     // so one stuck call cannot hold every later note behind it.
     const limit = DEVICE_ONLY.includes(route) ? DEVICE_TIMEOUT_MS : CLOUD_TIMEOUT_MS;
-    const result = await withTimeout(call, limit, () => controller.abort());
+    const result = await withTimeout(call, limit, () => controller.abort()).finally(
+      () => {
+        settled = true;
+      },
+    );
     const source = result.response.inferenceSource ?? null;
 
     // A device-only call answered by anything else is a routing fault, not a

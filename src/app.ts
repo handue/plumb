@@ -27,6 +27,7 @@ import {
 } from "./ai/schema";
 import { computeKpis } from "./kpi";
 import { createMap, type MapPin, type MapTile } from "./map";
+import { createRail } from "./rail";
 import {
   isQuotaError,
   scaleFile,
@@ -58,6 +59,7 @@ import {
   type CallRecord,
   type Finding,
   type Photo,
+  type Tier,
   type Visit,
 } from "./store";
 
@@ -103,6 +105,8 @@ const tilesHost = byId<HTMLDivElement>("tiles");
 const mapEmpty = byId<HTMLDivElement>("map-empty");
 const lostPlate = byId<HTMLParagraphElement>("lost");
 const wave = byId<HTMLDivElement>("wave");
+const sweep = byId<HTMLDivElement>("sweep");
+const rail = createRail(byId<HTMLElement>("rail"));
 const addAreaButton = byId<HTMLButtonElement>("add-area");
 const suggestions = byId<HTMLDivElement>("suggestions");
 const suggestionList = byId<HTMLUListElement>("suggestion-list");
@@ -177,6 +181,23 @@ const POLISH_IN_MS = 620;
 const POLISH_FLASH_MS = 900;
 /** What the capture line says when it has nothing more specific to say. */
 let deviceNote = "";
+
+/** On-device output still arriving, per finding, while a note is structured. */
+const streaming = new Map<string, string>();
+/**
+ * Where each structure call in flight is expected to be answered. Online
+ * with no on-device model, "prefer on device" is answered by the cloud.
+ */
+const structuringOn = new Map<string, Tier>();
+
+/** Shows streamed text on its card without rebuilding the feed. */
+function showStream(id: string, text: string): void {
+  streaming.set(id, text);
+  const line = feed.querySelector<HTMLElement>(
+    `.card[data-id="${CSS.escape(id)}"] .card-stream`,
+  );
+  if (line) line.textContent = text;
+}
 
 /** Bumped when the visit is cleared, so calls from before it are dropped. */
 let generation = 0;
@@ -503,6 +524,7 @@ async function logCall(
     ms: record.ms,
     promptBytes: encoder.encode(prompt).length,
     browserOnline: record.online,
+    deviceState: availability,
     simulatedOffline,
     error: record.error,
   });
@@ -542,7 +564,24 @@ async function structure(id: string): Promise<void> {
     knownAreas: knownAreaNames(),
   });
   const started = generation;
-  const record = await run(route, prompt);
+  // On the device the fields are shown as the model writes them. A call the
+  // cloud will answer is not streamed: that was slower and less reliable.
+  const onDevice = route === "captureOffline" || availability === "available";
+  structuringOn.set(id, onDevice ? "on_device" : "in_cloud");
+  renderDock();
+  const record = await run(
+    route,
+    prompt,
+    onDevice
+      ? (soFar) => {
+          if (started === generation && findingById(id)?.status === "structuring") {
+            showStream(id, soFar);
+          }
+        }
+      : undefined,
+  );
+  streaming.delete(id);
+  structuringOn.delete(id);
   if (started !== generation) return;
   // The call happened, so it is logged even if the finding was deleted.
   await logCall(finding.seq, "structure", route, prompt, record, simulatedOffline);
@@ -616,6 +655,8 @@ async function polish(id: string): Promise<void> {
   ].join("\n");
 
   const started = generation;
+  // Not streamed: in testing the cloud sent a JSON answer in two large
+  // pieces, took far longer, and sometimes failed mid-stream.
   const record = await run("polish", prompt);
   if (started !== generation) return;
   await logCall(finding.seq, "polish", "polish", prompt, record, simulatedOffline);
@@ -704,6 +745,7 @@ function warmUp(): void {
     }
     const simulatedOffline = simulated;
     warming = true;
+    renderDock();
     showCaptureStatus(
       "Loading the on-device model into memory. Notes added now are saved and wait for it.",
     );
@@ -1221,6 +1263,10 @@ function applyNetwork(initial: boolean): void {
     }
     sync(true);
   } else if (before === "online" && !online) {
+    // One pass across the whole screen as the color drains.
+    sweep.classList.remove("is-running");
+    void sweep.offsetWidth;
+    sweep.classList.add("is-running");
     clearTimeout(lostTimer);
     // The demo control is not a lost signal, and the plate says so.
     const lead = simulated && navigator.onLine ? "Offline simulated." : "Signal lost.";
@@ -1551,10 +1597,17 @@ function renderCard(finding: Finding): HTMLLIElement {
   } else if (finding.extraction) {
     card.append(extractedFields(finding.extraction));
   } else if (finding.status === "structuring") {
-    const skeleton = el("div", "skeleton");
-    skeleton.append(el("span"), el("span"), el("span"));
-    skeleton.setAttribute("aria-hidden", "true");
-    card.append(skeleton);
+    if (structuringOn.get(finding.id) === "in_cloud") {
+      const skeleton = el("div", "skeleton");
+      skeleton.append(el("span"), el("span"), el("span"));
+      skeleton.setAttribute("aria-hidden", "true");
+      card.append(skeleton);
+    } else {
+      // The on-device model's own output, as it arrives.
+      const stream = el("p", "card-stream", streaming.get(finding.id) ?? "");
+      stream.setAttribute("aria-label", "Output of the on-device model, arriving");
+      card.append(stream);
+    }
   }
 
   card.append(el("p", "card-note", finding.note));
@@ -1666,6 +1719,9 @@ function renderCard(finding: Finding): HTMLLIElement {
   return card;
 }
 
+/** The queue length last shown, to tell a drain from a refill. */
+let shownWaiting = 0;
+
 function renderFeed(): void {
   const focusKey = (document.activeElement as HTMLElement | null)?.dataset
     ?.focusKey;
@@ -1732,8 +1788,20 @@ function renderFeed(): void {
   }
   queueText.hidden = total === 0;
   queueText.dataset.state = state;
-  // A live region: only touch it when the words change.
-  if (queueText.textContent !== queue) queueText.textContent = queue;
+  // A live region: only touch it when the words change. The count ticks when
+  // it goes down, so the queue can be seen draining.
+  if (queueText.textContent !== queue) {
+    const draining = waiting > 0 && waiting < shownWaiting;
+    const [, count, rest] = /^(\d+)(.*)$/.exec(queue) ?? [];
+    if (count !== undefined) {
+      const number = el("b", "queue-count", count);
+      if (draining) number.classList.add("is-tick");
+      queueText.replaceChildren(number, rest ?? "");
+    } else {
+      queueText.textContent = queue;
+    }
+  }
+  shownWaiting = waiting;
 }
 
 function networkLabel(record: CallRecord): string {
@@ -1787,6 +1855,14 @@ function renderDock(): void {
 
   logTable.hidden = calls.length === 0;
   logEmpty.hidden = calls.length > 0;
+
+  const structuring = [...structuringOn.values()];
+  rail.update(calls, {
+    on_device: warming || structuring.includes("on_device"),
+    in_cloud:
+      structuring.includes("in_cloud") ||
+      findings.some((finding) => finding.status === "polishing"),
+  });
 }
 
 function drawReport(): void {
@@ -1914,6 +1990,8 @@ clearDialog.addEventListener("close", () => {
     findings = [];
     areas = [];
     calls = [];
+    streaming.clear();
+    structuringOn.clear();
     selectedId = null;
     lastDeleted = null;
     for (const id of [...photoUrls.keys()]) forgetPhotoUrl(id);

@@ -89,6 +89,8 @@ export interface CallRecord {
   promptBytes: number;
   /** What the browser reported when the call started. */
   browserOnline: boolean;
+  /** State of the on-device model when the call was made, if it was read. */
+  deviceState?: string;
   /** True if the "Simulate offline" demo control was on. */
   simulatedOffline: boolean;
   error: string | null;

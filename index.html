@@ -62,6 +62,8 @@
       </label>
     </header>
 
+    <div id="sweep" class="sweep" aria-hidden="true"></div>
+
     <div id="notice" class="notice" hidden>
       <p id="notice-text"></p>
       <button id="notice-action" type="button" hidden></button>
@@ -174,6 +176,12 @@
           </div>
           <ol id="feed" class="feed"></ol>
         </section>
+
+        <section
+          id="rail"
+          class="panel rail"
+          aria-label="Model calls by tier"
+        ></section>
 
         <section class="panel dock" aria-label="Measured figures and routing log">
           <dl id="kpis" class="kpis"></dl>
