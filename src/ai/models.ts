@@ -135,7 +135,7 @@ const cache = new Map<Route, GenerativeModel>();
  * - captureOffline: ONLY_ON_DEVICE. Chosen explicitly by the caller when the
  *   note must stay on the device. Never reaches the cloud.
  * - polish: ONLY_IN_CLOUD. Severity is a judgment call that stays with the
- *   larger model, so it waits for a connection instead of falling back.
+ *   cloud model, so it waits for a connection instead of falling back.
  */
 export function getModel(route: Route): GenerativeModel {
   const cached = cache.get(route);

@@ -160,7 +160,8 @@ const photoUrls = new Map<string, string>();
 
 let selectedId: string | null = null;
 let simulated = localStorage.getItem(SIMULATE_KEY) === "1";
-let availability = "missing";
+/** "unknown" until Chrome has been asked, so nothing is claimed before that. */
+let availability = "unknown";
 let downloading = false;
 /** The finding removed last, kept so the delete can be undone. */
 let lastDeleted: Finding | null = null;
@@ -239,13 +240,25 @@ function isBusy(error: string | null): boolean {
   return (
     error !== null &&
     !isOutOfQuota(error) &&
-    /\[(429|5\d\d)\b|high demand|overloaded/i.test(error)
+    /\[(429|5\d\d)\b|high demand|overloaded|quota|RESOURCE_EXHAUSTED/i.test(error)
   );
 }
 
-/** True when the project's quota for the cloud model is used up. */
+/** Seconds the cloud asked to wait before a retry, if it said. */
+function retryHintMs(error: string): number | null {
+  const match = /retry(?:Delay"?:?\s*"?| in )([\d.]+)\s*s/i.exec(error);
+  return match ? Number(match[1]) * 1000 : null;
+}
+
+/**
+ * True when the project's allowance for the cloud model is spent for the
+ * day. A per-minute rate limit also says "quota", but it clears in seconds
+ * and is retried like any busy answer.
+ */
 function isOutOfQuota(error: string | null): boolean {
-  return error !== null && /quota|RESOURCE_EXHAUSTED/i.test(error);
+  if (error === null || !/quota|RESOURCE_EXHAUSTED/i.test(error)) return false;
+  const hint = retryHintMs(error);
+  return /per ?day/i.test(error) || (hint !== null && hint > 120_000);
 }
 
 /** Cloud steps retried after a busy answer, per finding, in this session. */
@@ -269,7 +282,7 @@ function retryWhenBusy(id: string, error: string | null): void {
     } else if (finding.status === "draft" && finding.polishError) {
       enqueue(polishQueue, "polish", id, polish);
     }
-  }, BUSY_RETRY_MS * (tries + 1));
+  }, Math.max(BUSY_RETRY_MS * (tries + 1), (retryHintMs(error ?? "") ?? 0) + 1000));
 }
 
 /** Turns an SDK error into something an inspector can act on. */
@@ -277,10 +290,12 @@ function explain(error: string | null, fallback: string): string {
   if (!error) return fallback;
   if (/^No answer after/.test(error)) return error;
   if (/app ?check/i.test(error)) {
-    return "App Check did not accept this browser, so the cloud refused the call. On localhost, register this browser's debug token in the Firebase console.";
+    return ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)
+      ? "App Check did not accept this browser, so the cloud refused the call. On localhost, register this browser's debug token in the Firebase console."
+      : "The cloud did not accept this browser's App Check token, so it refused the call. Reload the page and try again.";
   }
   if (isOutOfQuota(error)) {
-    return "The cloud model's quota for this project is used up, so it refused the call. Try again later, or use a model with more quota.";
+    return "The cloud model's daily allowance for this project is used up, so it refused the call. Notes stay saved on this device; polish can be tried again later.";
   }
   if (isBusy(error)) {
     return "The cloud model is busy right now. Plumb tries again by itself a few times; after that, use Try again.";
@@ -546,6 +561,7 @@ async function structure(id: string): Promise<void> {
       current.extraction = parseExtraction(record.text);
       current.extractionTier = record.source;
       current.extractedOffline = offline;
+      busyRetries.delete(id);
       // Offline only because of the demo control, not for real.
       current.extractedSimulated = offline && simulatedOffline && record.online;
       current.status = "draft";
@@ -633,6 +649,7 @@ async function polish(id: string): Promise<void> {
     try {
       current.polish = parsePolish(record.text);
       current.status = "polished";
+      busyRetries.delete(id);
       polishedAt.set(current.id, performance.now());
     } catch {
       current.polishError = "The cloud answered, but not in the expected fields.";
@@ -672,12 +689,21 @@ let warmedUp = false;
  * sample note at startup takes that wait, so the inspector's first note does
  * not. It is a real model call, so it is in the routing log as "Warm-up".
  */
+let warming = false;
+
 function warmUp(): void {
-  if (warmedUp || !visit || !configured || availability !== "available") return;
+  // It starts while the setup form is still up, so the wait is mostly over
+  // by the time the first note is typed.
+  if (warmedUp || !configured || availability !== "available") return;
   warmedUp = true;
+  const startedIn = generation;
   structureQueue(async () => {
-    const startedIn = generation;
+    if (startedIn !== generation) {
+      warmedUp = false;
+      return;
+    }
     const simulatedOffline = simulated;
+    warming = true;
     showCaptureStatus(
       "Loading the on-device model into memory. Notes added now are saved and wait for it.",
     );
@@ -687,9 +713,14 @@ function warmUp(): void {
       knownAreas: [],
     });
     const record = await run("captureOffline", prompt);
+    warming = false;
     if (startedIn !== generation) return;
     await logCall(0, "warmup", "captureOffline", prompt, record, simulatedOffline);
-    if (captureStatus.textContent?.startsWith("Loading the on-device model")) {
+    if (record.error) {
+      showCaptureStatus(
+        "The on-device model did not answer. Notes are saved; while online they are structured in the cloud.",
+      );
+    } else if (/on-device model (into memory|is still loading)/.test(captureStatus.textContent ?? "")) {
       captureStatus.textContent = "";
       showCaptureStatus();
     }
@@ -742,7 +773,11 @@ async function addFinding(note: string): Promise<void> {
     );
   }
   selectedId = finding.id;
-  showCaptureStatus(`Finding ${seq} saved on this device.`);
+  showCaptureStatus(
+    warming
+      ? `Finding ${seq} saved on this device. The on-device model is still loading, which happens once per page; the note is structured when it is ready.`
+      : `Finding ${seq} saved on this device.`,
+  );
   render();
   enqueue(structureQueue, "structure", finding.id, structure);
 }
@@ -756,6 +791,7 @@ captureForm.addEventListener("submit", (event) => {
     return;
   }
   noteInput.value = "";
+  noteInput.focus();
   void addFinding(note).catch((cause: unknown) => {
     // The note never reached storage: hand it back instead of losing it.
     if (noteInput.value.trim() === "") noteInput.value = note;
@@ -1136,9 +1172,14 @@ themeButton.addEventListener("click", () => {
 
 function describeNetwork(): string {
   if (isOnline()) {
-    return configured ? "Online: Gemini in the cloud" : "Online: cloud not configured";
+    if (!configured) return "Online: cloud not configured";
+    // Online, notes are still structured on the device when it has the model.
+    return availability === "available"
+      ? "Online: Nano on device, Gemini in the cloud"
+      : "Online: Gemini in the cloud";
   }
   const label = simulated && navigator.onLine ? "Offline (simulated)" : "Offline";
+  if (availability === "unknown") return label;
   return availability === "available" && configured
     ? `${label}: Gemini Nano on device`
     : `${label}: notes saved, not structured`;
@@ -1149,7 +1190,7 @@ function paintNetwork(): void {
   netText.textContent = describeNetwork();
   const healthy = isOnline()
     ? configured
-    : availability === "available" && configured;
+    : availability === "unknown" || (availability === "available" && configured);
   document.body.toggleAttribute("data-degraded", !healthy);
 }
 
@@ -1608,6 +1649,7 @@ function renderCard(finding: Finding): HTMLLIElement {
   if (canRetry) {
     actions.append(
       actionButton("Try again", `retry:${finding.id}`, () => {
+        busyRetries.delete(finding.id);
         if (finding.status === "queued") {
           enqueue(structureQueue, "structure", finding.id, structure);
         } else {
@@ -1646,8 +1688,13 @@ function renderFeed(): void {
   );
 
   if (!held && focusKey && !focusKey.startsWith("pin:")) {
+    // A rebuilt Area dropdown does not get focus back: a focused dropdown
+    // holds its card, which would hide the polish that follows a move.
+    const key = focusKey.startsWith("area:")
+      ? `card:${focusKey.slice(5)}`
+      : focusKey;
     feed
-      .querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)
+      .querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(key)}"]`)
       ?.focus();
   }
 
@@ -2015,7 +2062,38 @@ async function start(): Promise<void> {
 void start();
 
 if (import.meta.env.PROD && "serviceWorker" in navigator) {
+  // The page is served from the cache first, so a new deploy only shows after
+  // the new worker takes over. Reload then, unless a note is being typed or a
+  // model call is running. Saved notes are in IndexedDB either way.
+  const hadController = navigator.serviceWorker.controller !== null;
+  let reloaded = false;
+  navigator.serviceWorker.addEventListener("controllerchange", () => {
+    if (!hadController || reloaded) return;
+    if (noteInput.value.trim() !== "" || pendingSteps.size > 0) return;
+    reloaded = true;
+    location.reload();
+  });
   window.addEventListener("load", () => {
     void navigator.serviceWorker.register("/sw.js");
   });
+}
+
+// A hosted page opened with no connection could not load the App Check
+// script, so its cloud calls would hang after reconnecting. One reload fixes
+// it, and notes are already saved, so reload as soon as nothing is in flight.
+if (import.meta.env.PROD && !navigator.onLine) {
+  window.addEventListener(
+    "online",
+    () => {
+      const reloadWhenIdle = (): void => {
+        if (noteInput.value.trim() === "" && pendingSteps.size === 0) {
+          location.reload();
+        } else {
+          setTimeout(reloadWhenIdle, 1500);
+        }
+      };
+      reloadWhenIdle();
+    },
+    { once: true },
+  );
 }

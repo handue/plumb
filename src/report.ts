@@ -163,8 +163,16 @@ export function renderReport(paper: HTMLElement, data: ReportData): void {
     if (finding.polish) {
       lead.append(finding.polish.sentence);
     } else if (finding.extraction) {
-      const { item: what, issue, size_cm } = finding.extraction;
-      const text = `${what}: ${issue}${size_cm === null ? "" : `, about ${Math.round(size_cm * 10) / 10} cm`}.`;
+      const { item: what, issue, size_cm, size_value, size_unit } =
+        finding.extraction;
+      // The size as the note gave it, when the finding has it.
+      const size =
+        size_cm === null
+          ? ""
+          : size_value != null && size_unit != null
+            ? `, about ${size_value} ${size_unit}`
+            : `, about ${size_cm} cm`;
+      const text = `${what}: ${issue}${size}.`;
       lead.append(text.charAt(0).toUpperCase() + text.slice(1));
     } else {
       lead.append("Note not structured yet.");

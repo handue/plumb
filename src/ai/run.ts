@@ -30,6 +30,7 @@ export interface RunRecord {
  * stalled token would otherwise leave the call pending forever.
  */
 const CLOUD_TIMEOUT_MS = 90_000;
+const DEVICE_TIMEOUT_MS = 120_000;
 
 /**
  * Returns why a route cannot run right now, or null if it can. A blocked
@@ -91,9 +92,10 @@ export async function run(
     const call = getModel(route).generateContent(prompt, {
       signal: controller.signal,
     });
-    const result = await (DEVICE_ONLY.includes(route)
-      ? call
-      : withTimeout(call, CLOUD_TIMEOUT_MS, () => controller.abort()));
+    // A device-only call gets a longer limit, above the measured cold load,
+    // so one stuck call cannot hold every later note behind it.
+    const limit = DEVICE_ONLY.includes(route) ? DEVICE_TIMEOUT_MS : CLOUD_TIMEOUT_MS;
+    const result = await withTimeout(call, limit, () => controller.abort());
     const source = result.response.inferenceSource ?? null;
 
     // A device-only call answered by anything else is a routing fault, not a

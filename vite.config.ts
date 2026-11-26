@@ -1,11 +1,31 @@
 import { createHash } from "node:crypto";
-import { defineConfig, type Plugin } from "vite";
+import { defineConfig, loadEnv, type Plugin } from "vite";
 
 /**
  * Emits a service worker that precaches the built app shell, so the app
  * opens with no network after the first visit. Model calls are not cached:
  * on-device calls never reach the network, and cloud calls must be live.
  */
+/**
+ * A hosted build without the reCAPTCHA Enterprise site key would ship with no
+ * App Check at all and every cloud call would be refused. Fail the build
+ * instead of finding that out in front of a user.
+ */
+function requireAppCheckKey(): Plugin {
+  return {
+    name: "plumb-require-app-check-key",
+    apply: "build",
+    config(_config, { mode }) {
+      const env = loadEnv(mode, process.cwd(), "VITE_");
+      if (mode === "production" && !env.VITE_RECAPTCHA_ENTERPRISE_SITE_KEY) {
+        throw new Error(
+          "A production build needs VITE_RECAPTCHA_ENTERPRISE_SITE_KEY for App Check.",
+        );
+      }
+    },
+  };
+}
+
 function appShellServiceWorker(): Plugin {
   return {
     name: "plumb-app-shell-sw",
@@ -82,7 +102,7 @@ self.addEventListener("fetch", (event) => {
 }
 
 export default defineConfig({
-  plugins: [appShellServiceWorker()],
+  plugins: [appShellServiceWorker(), requireAppCheckKey()],
   build: {
     rolldownOptions: {
       input: { main: "index.html", bench: "bench.html" },

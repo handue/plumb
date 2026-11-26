@@ -160,6 +160,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+/** One decimal for ordinary sizes; two significant digits below 1 cm. */
+function toCentimeters(value: number, unit: SizeUnit): number {
+  const cm = value * SIZE_UNITS[unit];
+  return cm >= 1 ? Math.round(cm * 10) / 10 : Number(cm.toPrecision(2));
+}
+
 /** Parses and validates model output. Throws if it does not match. */
 export function parseExtraction(text: string): Extraction {
   const data: unknown = JSON.parse(text);
@@ -184,7 +190,7 @@ export function parseExtraction(text: string): Extraction {
     issue: data.issue,
     size_value: sized ? value : null,
     size_unit: sized ? unit : null,
-    size_cm: sized ? Math.round(value * SIZE_UNITS[unit] * 10) / 10 : null,
+    size_cm: sized ? toCentimeters(value, unit) : null,
     water_related: data.water_related,
   };
 }

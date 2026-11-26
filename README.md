@@ -34,7 +34,8 @@ inference.
    the color of its worst finding.
 6. **Report.** One page with a summary, the count per area, every finding
    sorted by severity and its photos, printable or saved as PDF from the
-   browser. It is stamped Ready once every finding has been reviewed.
+   browser. It is stamped "Ready for review" once every finding has a severity
+   from the cloud model; until then it is stamped "Draft".
 
 A routing log shows every model call: the inference mode it was made with,
 the tier that answered, the measured latency and the network state. The
@@ -62,7 +63,7 @@ Plumb splits the work along that line:
 |---|---|---|
 | Structure a note, online | `PREFER_ON_DEVICE` | Uses the on-device model when the browser has it. Falls back to the cloud on machines without one. |
 | Structure a note, offline | `ONLY_ON_DEVICE` | Never reaches the cloud, so it keeps working with the network off. |
-| Polish wording and assign severity | `ONLY_IN_CLOUD` | A judgment call that waits for a connection instead of falling back to the small model. |
+| Polish wording and assign severity | `ONLY_IN_CLOUD` | A judgment call that waits for a connection instead of falling back to the on-device model. |
 
 The app reads `response.inferenceSource` from the SDK and shows which tier
 answered each call, with the latency measured in the browser.
@@ -110,16 +111,20 @@ at startup and shows it in the routing log.
 Three things moved these numbers during tuning:
 
 - Few-shot examples in the instructions. Without them the model left sizes
-  given in meters empty and guessed an area for notes that named none.
+  given in meters empty and guessed an area for notes that named none. Size
+  accuracy went from 83% to 97%.
 - The model reports the number and the unit, and the app converts to
   centimeters. Asked to convert, the model sometimes got the arithmetic wrong
-  (2 m became 2000 cm). Size accuracy went from 83% to 100%.
+  (2 ft became 75.7 cm in the test set, and 2 m became 2000 cm in the app).
+  Size accuracy went from 97% to 100%.
 - The JSON schema is left out of the model's input. The output is still
   constrained by it, and latency dropped by about a third.
 
-The misses that remain are places named only as part of the item ("bar ice
-machine", "balcony railing"), which the model files under General. That is
-what the manual area controls are for.
+The area misses that remain are places named only as part of the item ("bar
+ice machine", "balcony railing"), which the model files under General. That
+is what the manual area controls are for. The one water-flag miss was an oil
+spill flagged as water related. The test notes and the harness are not
+included in this repository.
 
 The cloud step uses `gemini-3.5-flash-lite` by default, because the larger
 models had a free quota of 20 requests a day when this was tested. Set
@@ -201,6 +206,10 @@ src/
   ai/models.ts    One model instance per routing decision
   ai/schema.ts    Shared JSON schemas, prompts and output validation
   ai/run.ts       Timed model calls that record which tier answered
+  presets.ts      Loads the visit types
+  bench.ts        Routing bench logic
+  app.css         Styles and the two themes
+firebase.json     Hosting config
 ```
 
 ## Limitations
