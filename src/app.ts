@@ -14,30 +14,40 @@ import {
 } from "./ai/models";
 import { blocker, run } from "./ai/run";
 import {
+  extractionPrompt,
+  GENERAL_AREA,
   parseExtraction,
   parsePolish,
   SEVERITIES,
   type Severity,
 } from "./ai/schema";
-import {
-  createPlan,
-  ROOM_LABELS,
-  toPlanRoom,
-  type PlanPin,
-  type PlanRoom,
-} from "./plan";
-import { renderReport, roomLabel } from "./report";
+import { computeKpis } from "./kpi";
+import { createMap, type MapPin, type MapTile } from "./map";
+import { isQuotaError, scaleFile, scaleVideoFrame, type ScaledImage } from "./photos";
+import { CUSTOM_PRESET_ID, presetById, PRESETS, type Preset } from "./presets";
+import { renderReport } from "./report";
 import {
   addCall,
-  clearInspection,
+  clearVisit,
+  deleteArea,
   deleteFinding,
-  getMeta,
+  deletePhoto,
+  deletePhotosOf,
+  loadAreas,
   loadCalls,
   loadFindings,
+  loadPhotos,
+  loadVisit,
+  saveArea,
   saveFinding,
-  setMeta,
+  savePhoto,
+  saveVisit,
+  type Area,
+  type AreaOrigin,
   type CallRecord,
   type Finding,
+  type Photo,
+  type Visit,
 } from "./store";
 
 function byId<T extends Element>(id: string): T {
@@ -57,15 +67,33 @@ function el<K extends keyof HTMLElementTagNameMap>(
   return element;
 }
 
+function plural(count: number, word: string): string {
+  return `${count} ${word}${count === 1 ? "" : "s"}`;
+}
+
+const visitBar = byId<HTMLDivElement>("visit-bar");
 const siteInput = byId<HTMLInputElement>("site");
+const visitType = byId<HTMLSpanElement>("visit-type");
+const viewTabs = byId<HTMLElement>("views");
+const queueText = byId<HTMLParagraphElement>("queue");
 const netText = byId<HTMLSpanElement>("net-text");
 const simulateSwitch = byId<HTMLInputElement>("simulate");
 const notice = byId<HTMLDivElement>("notice");
 const noticeText = byId<HTMLParagraphElement>("notice-text");
 const noticeAction = byId<HTMLButtonElement>("notice-action");
-const planHint = byId<HTMLParagraphElement>("plan-hint");
-const planSvg = byId<SVGSVGElement>("plan");
+const setupView = byId<HTMLFormElement>("setup-view");
+const setupSite = byId<HTMLInputElement>("setup-site");
+const setupPresets = byId<HTMLDivElement>("setup-presets");
+const setupCustom = byId<HTMLDivElement>("setup-custom");
+const setupCustomLabel = byId<HTMLInputElement>("setup-custom-label");
+const setupStatus = byId<HTMLParagraphElement>("setup-status");
+const tilesHost = byId<HTMLDivElement>("tiles");
+const mapEmpty = byId<HTMLDivElement>("map-empty");
+const lostPlate = byId<HTMLParagraphElement>("lost");
 const wave = byId<HTMLDivElement>("wave");
+const addAreaButton = byId<HTMLButtonElement>("add-area");
+const suggestions = byId<HTMLDivElement>("suggestions");
+const suggestionList = byId<HTMLUListElement>("suggestion-list");
 const captureForm = byId<HTMLFormElement>("capture-form");
 const noteInput = byId<HTMLInputElement>("note");
 const captureStatus = byId<HTMLParagraphElement>("capture-status");
@@ -77,7 +105,7 @@ const feed = byId<HTMLOListElement>("feed");
 const clearButton = byId<HTMLButtonElement>("clear");
 const clearDialog = byId<HTMLDialogElement>("clear-dialog");
 const clearText = byId<HTMLParagraphElement>("clear-text");
-const logSummary = byId<HTMLParagraphElement>("log-summary");
+const kpiList = byId<HTMLDListElement>("kpis");
 const logEmpty = byId<HTMLParagraphElement>("log-empty");
 const logTable = byId<HTMLTableElement>("log");
 const captureView = byId<HTMLDivElement>("capture-view");
@@ -86,21 +114,34 @@ const paper = byId<HTMLElement>("paper");
 const printButton = byId<HTMLButtonElement>("print");
 const tabCapture = byId<HTMLAnchorElement>("tab-capture");
 const tabReport = byId<HTMLAnchorElement>("tab-report");
+const photoInput = byId<HTMLInputElement>("photo-input");
+const cameraDialog = byId<HTMLDialogElement>("camera-dialog");
+const cameraVideo = byId<HTMLVideoElement>("camera-video");
+const cameraStatus = byId<HTMLParagraphElement>("camera-status");
+const cameraShoot = byId<HTMLButtonElement>("camera-shoot");
+const cameraClose = byId<HTMLButtonElement>("camera-close");
+const photoDialog = byId<HTMLDialogElement>("photo-dialog");
+const photoTitle = byId<HTMLHeadingElement>("photo-title");
+const photoFrame = byId<HTMLDivElement>("photo-frame");
+const photoRemove = byId<HTMLButtonElement>("photo-remove");
+const photoClose = byId<HTMLButtonElement>("photo-close");
 
-const DEFAULT_SITE = "Unit 4B, Riverside Apartments";
 const SIMULATE_KEY = "plumb.simulateOffline";
-const EXAMPLE_NOTES = [
-  "kitchen outlet next to sink has no gfci",
-  "water stain on bathroom ceiling about 30 cm wide",
-  "hairline crack on living room north wall, roughly 16 inches",
-];
+const DEFAULT_PRESET_ID = "warehouse";
 const TIER_LABELS = { on_device: "on device", in_cloud: "in cloud" } as const;
 const LOG_ROWS = 60;
+const NEW_AREA_VALUE = "__new";
 
+let visit: Visit | null = null;
+let areas: Area[] = [];
 let findings: Finding[] = [];
 let calls: CallRecord[] = [];
+/** Photos per finding id. */
+const photos = new Map<string, Photo[]>();
+/** Object URLs for stored photos, made on demand and revoked on removal. */
+const photoUrls = new Map<string, string>();
+
 let selectedId: string | null = null;
-let placingId: string | null = null;
 let simulated = localStorage.getItem(SIMULATE_KEY) === "1";
 let availability = "missing";
 let downloading = false;
@@ -109,11 +150,14 @@ let lastDeleted: Finding | null = null;
 /** Findings whose card or polish has not been shown yet, for one-off motion. */
 const shownCards = new Set<string>();
 const freshlyPolished = new Set<string>();
+/** What the capture line says when it has nothing more specific to say. */
+let deviceNote = "";
 
-/** Bumped when the inspection is cleared, so calls from before it are dropped. */
+/** Bumped when the visit is cleared, so calls from before it are dropped. */
 let generation = 0;
 
 const configured = missingConfig().length === 0;
+const encoder = new TextEncoder();
 
 /** Online for the app's purposes: the browser is online and the demo switch is off. */
 function isOnline(): boolean {
@@ -122,6 +166,42 @@ function isOnline(): boolean {
 
 function findingById(id: string): Finding | undefined {
   return findings.find((finding) => finding.id === id);
+}
+
+function areaById(id: string | null): Area | undefined {
+  return id === null ? undefined : areas.find((area) => area.id === id);
+}
+
+function preset(): Preset {
+  return presetById(visit?.presetId);
+}
+
+function photosOf(findingId: string): Photo[] {
+  return photos.get(findingId) ?? [];
+}
+
+function photoUrl(photo: Photo): string {
+  let url = photoUrls.get(photo.id);
+  if (!url) {
+    url = URL.createObjectURL(photo.blob);
+    photoUrls.set(photo.id, url);
+  }
+  return url;
+}
+
+function forgetPhotoUrl(photoId: string): void {
+  const url = photoUrls.get(photoId);
+  if (url) URL.revokeObjectURL(url);
+  photoUrls.delete(photoId);
+}
+
+function showCaptureStatus(text = ""): void {
+  captureStatus.textContent = text || deviceNote;
+}
+
+function showFeedStatus(...content: (string | Node)[]): void {
+  feedStatus.replaceChildren(...content);
+  feedStatus.hidden = content.length === 0;
 }
 
 /** Turns an SDK error into something an inspector can act on. */
@@ -136,6 +216,113 @@ function explain(error: string | null, fallback: string): string {
   }
   return error.length > 220 ? `${error.slice(0, 219)}…` : error;
 }
+
+// ---------------------------------------------------------------------- areas
+
+/** Key that decides whether two area names are the same place. */
+function areaKey(name: string): string {
+  return name
+    .toLowerCase()
+    .replace(/^the\s+/, "")
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+/** Tidies a typed or extracted area name for display. */
+function cleanAreaName(raw: string): string {
+  const name = raw.replace(/\s+/g, " ").trim().slice(0, 40);
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}
+
+function findArea(name: string): Area | undefined {
+  const key = areaKey(name);
+  return key === "" ? undefined : areas.find((area) => areaKey(area.name) === key);
+}
+
+async function createArea(name: string, origin: AreaOrigin): Promise<Area> {
+  const area: Area = {
+    id: crypto.randomUUID(),
+    name,
+    origin,
+    createdAt: new Date().toISOString(),
+  };
+  areas.push(area);
+  await saveArea(area);
+  return area;
+}
+
+/** The area with this name, created if the site has none like it yet. */
+async function ensureArea(raw: string, origin: AreaOrigin): Promise<Area> {
+  const name = cleanAreaName(raw) || GENERAL_AREA;
+  return findArea(name) ?? createArea(name, origin);
+}
+
+/** Area names the capture prompt offers the model, so names stay consistent. */
+function knownAreaNames(): string[] {
+  const names = areas.map((area) => area.name);
+  for (const suggestion of preset().areas) {
+    if (!names.some((name) => areaKey(name) === areaKey(suggestion))) {
+      names.push(suggestion);
+    }
+  }
+  return names;
+}
+
+async function addBlankArea(): Promise<Area> {
+  let name = "New area";
+  for (let n = 2; findArea(name); n++) name = `New area ${n}`;
+  return createArea(name, "manual");
+}
+
+async function renameArea(areaId: string, raw: string): Promise<void> {
+  const area = areaById(areaId);
+  if (!area) return;
+  const name = cleanAreaName(raw);
+  if (name === "" || name === area.name) {
+    render();
+    return;
+  }
+  const twin = findArea(name);
+  if (twin && twin !== area) {
+    // Two tiles for one place: fold this one into the other.
+    const moved = findings.filter((finding) => finding.areaId === area.id);
+    for (const finding of moved) {
+      finding.areaId = twin.id;
+      finding.areaSetByUser = true;
+    }
+    areas = areas.filter((other) => other !== area);
+    await Promise.all([...moved.map(saveFinding), deleteArea(area.id)]);
+    showFeedStatus(
+      `Merged into ${twin.name}: ${plural(moved.length, "finding")} moved.`,
+    );
+  } else {
+    area.name = name;
+    await saveArea(area);
+  }
+  render();
+}
+
+async function removeArea(areaId: string): Promise<void> {
+  if (findings.some((finding) => finding.areaId === areaId)) return;
+  areas = areas.filter((area) => area.id !== areaId);
+  await deleteArea(areaId);
+  render();
+}
+
+async function moveFinding(findingId: string, areaId: string): Promise<void> {
+  const finding = findingById(findingId);
+  if (!finding || !areaById(areaId) || finding.areaId === areaId) return;
+  finding.areaId = areaId;
+  finding.areaSetByUser = true;
+  await saveFinding(finding);
+  render();
+}
+
+addAreaButton.addEventListener("click", () => {
+  void addBlankArea().then((area) => {
+    render();
+    map.editName(area.id);
+  });
+});
 
 // ---------------------------------------------------------------- work queues
 
@@ -176,6 +363,7 @@ async function logCall(
   findingSeq: number,
   step: CallRecord["step"],
   route: Route,
+  prompt: string,
   record: Awaited<ReturnType<typeof run>>,
   simulatedOffline: boolean,
 ): Promise<void> {
@@ -187,23 +375,25 @@ async function logCall(
     mode: ROUTE_MODES[route],
     tier: record.source,
     ms: record.ms,
+    promptBytes: encoder.encode(prompt).length,
     browserOnline: record.online,
     simulatedOffline,
     error: record.error,
   });
-  // Skip the in-memory row if the inspection was cleared during the write.
+  // Skip the in-memory row if the visit was cleared during the write.
   if (log === calls) calls.push(saved);
 }
 
 /** Turns a saved note into fields. Leaves it queued if that is not possible now. */
 async function structure(id: string): Promise<void> {
   const finding = findingById(id);
-  if (!finding || finding.status !== "queued") return;
+  if (!finding || finding.status !== "queued" || !visit) return;
 
   const simulatedOffline = simulated;
+  const offline = !isOnline();
   // With no connection the call must not leave the device, so it is made in
   // device-only mode. Online, the SDK prefers the device and may fall back.
-  const route: Route = isOnline() ? "capture" : "captureOffline";
+  const route: Route = offline ? "captureOffline" : "capture";
 
   const blocked = configured
     ? await blocker(route)
@@ -220,11 +410,16 @@ async function structure(id: string): Promise<void> {
   finding.captureError = null;
   render();
 
+  const prompt = extractionPrompt(finding.note, {
+    visitType: visit.typeLabel,
+    hint: preset().hint,
+    knownAreas: knownAreaNames(),
+  });
   const started = generation;
-  const record = await run(route, finding.note);
+  const record = await run(route, prompt);
   if (started !== generation) return;
   // The call happened, so it is logged even if the finding was deleted.
-  await logCall(finding.seq, "structure", route, record, simulatedOffline);
+  await logCall(finding.seq, "structure", route, prompt, record, simulatedOffline);
   const current = findingById(id);
   if (current !== finding) {
     render();
@@ -238,6 +433,7 @@ async function structure(id: string): Promise<void> {
     try {
       current.extraction = parseExtraction(record.text);
       current.extractionTier = record.source;
+      current.extractedOffline = offline;
       current.status = "draft";
     } catch {
       current.status = "queued";
@@ -245,11 +441,17 @@ async function structure(id: string): Promise<void> {
         "The model answered, but not in the expected fields.";
     }
   }
+
+  // File the finding under the area the model read from the note, unless the
+  // inspector already filed it by hand.
+  if (current.extraction && !current.areaSetByUser) {
+    const area = await ensureArea(current.extraction.area, "note");
+    current.areaId = area.id;
+  }
   await saveFinding(current);
 
-  if (current.status === "draft") {
-    if (!current.pin && placingId === null) startPlacing(current.id);
-    if (isOnline()) enqueue(polishQueue, "polish", id, polish);
+  if (current.status === "draft" && isOnline()) {
+    enqueue(polishQueue, "polish", id, polish);
   }
   render();
 }
@@ -257,7 +459,9 @@ async function structure(id: string): Promise<void> {
 /** Asks the cloud model for the report sentence, severity and flags. */
 async function polish(id: string): Promise<void> {
   const finding = findingById(id);
-  if (!finding || finding.status !== "draft" || !finding.extraction) return;
+  if (!finding || finding.status !== "draft" || !finding.extraction || !visit) {
+    return;
+  }
   if (!isOnline() || !configured) return;
 
   const simulatedOffline = simulated;
@@ -265,18 +469,17 @@ async function polish(id: string): Promise<void> {
   finding.polishError = null;
   render();
 
-  const lines = [
+  const prompt = [
+    `Visit type: ${visit.typeLabel}`,
+    `Area: ${areaById(finding.areaId)?.name ?? finding.extraction.area}`,
     `Inspector's note: ${finding.note}`,
     `Extracted finding: ${JSON.stringify(finding.extraction)}`,
-  ];
-  if (finding.pin) {
-    lines.push(`Room marked on the floor plan: ${finding.pin.room}`);
-  }
+  ].join("\n");
 
   const started = generation;
-  const record = await run("polish", lines.join("\n"));
+  const record = await run("polish", prompt);
   if (started !== generation) return;
-  await logCall(finding.seq, "polish", "polish", record, simulatedOffline);
+  await logCall(finding.seq, "polish", "polish", prompt, record, simulatedOffline);
   const current = findingById(id);
   if (current !== finding) {
     render();
@@ -312,6 +515,7 @@ async function polish(id: string): Promise<void> {
  * steps that failed before are tried again.
  */
 function sync(retry: boolean): void {
+  if (!visit) return;
   for (const finding of findings) {
     if (finding.status === "queued" && (retry || !finding.captureError)) {
       enqueue(structureQueue, "structure", finding.id, structure);
@@ -344,8 +548,10 @@ async function addFinding(note: string): Promise<void> {
     status: "queued",
     extraction: null,
     extractionTier: null,
+    extractedOffline: false,
     captureError: null,
-    pin: null,
+    areaId: null,
+    areaSetByUser: false,
     polish: null,
     polishError: null,
   };
@@ -353,7 +559,7 @@ async function addFinding(note: string): Promise<void> {
   await saveFinding(finding);
   findings.push(finding);
   selectedId = finding.id;
-  captureStatus.textContent = `Finding ${seq} saved on this device.`;
+  showCaptureStatus(`Finding ${seq} saved on this device.`);
   render();
   enqueue(structureQueue, "structure", finding.id, structure);
 }
@@ -362,7 +568,7 @@ captureForm.addEventListener("submit", (event) => {
   event.preventDefault();
   const note = noteInput.value.trim();
   if (!note) {
-    captureStatus.textContent = "Type a note first.";
+    showCaptureStatus("Type a note first.");
     noteInput.focus();
     return;
   }
@@ -370,92 +576,198 @@ captureForm.addEventListener("submit", (event) => {
   void addFinding(note);
 });
 
-// --------------------------------------------------------------- pin placing
+// -------------------------------------------------------------------- photos
 
-/** With `focusPlan`, keyboard focus moves to the plan so a room can be chosen. */
-function startPlacing(id: string, focusPlan = false): void {
-  placingId = id;
-  selectedId = id;
-  render();
-  if (focusPlan) {
-    plan.focusRoom(toPlanRoom(findingById(id)?.extraction?.room));
-  }
+const QUOTA_MESSAGE =
+  "This device is out of storage, so the photo was not saved. Remove photos or findings you no longer need, then try again.";
+
+async function storePhoto(findingId: string, image: ScaledImage): Promise<Photo> {
+  const photo: Photo = {
+    id: crypto.randomUUID(),
+    findingId,
+    blob: image.blob,
+    width: image.width,
+    height: image.height,
+    createdAt: new Date().toISOString(),
+  };
+  await savePhoto(photo);
+  photos.set(findingId, [...photosOf(findingId), photo]);
+  return photo;
 }
 
-function stopPlacing(): void {
-  placingId = null;
+function photoProblem(cause: unknown): string {
+  if (isQuotaError(cause)) return QUOTA_MESSAGE;
+  return `The photo was not saved: ${cause instanceof Error ? cause.message : String(cause)}`;
+}
+
+/** Downscales and stores picked files, one at a time, and reports the outcome. */
+async function attachFiles(findingId: string, files: File[]): Promise<void> {
+  const finding = findingById(findingId);
+  if (!finding || files.length === 0) return;
+  let saved = 0;
+  let problem = "";
+  for (const file of files) {
+    try {
+      await storePhoto(findingId, await scaleFile(file));
+      saved += 1;
+    } catch (cause) {
+      problem = photoProblem(cause);
+      if (isQuotaError(cause)) break;
+    }
+  }
+  const done =
+    saved > 0
+      ? `${plural(saved, "photo")} saved on this device for finding ${finding.seq}.`
+      : "";
+  showFeedStatus([done, problem].filter(Boolean).join(" "));
   render();
 }
 
-async function placePin(x: number, y: number, room: PlanRoom): Promise<void> {
-  const finding = placingId ? findingById(placingId) : undefined;
-  placingId = null;
-  if (!finding) {
-    render();
-    return;
-  }
-  const hadPlanFocus = planSvg.contains(document.activeElement);
-  finding.pin = { x, y, room };
-  await saveFinding(finding);
+/** The finding the hidden file input or the camera is collecting photos for. */
+let photoTargetId: string | null = null;
 
-  // Offer the next structured finding that still has no pin.
-  const next = findings.find((other) => other.extraction && !other.pin);
-  if (next) placingId = next.id;
-  render();
-  if (hadPlanFocus) {
-    if (next) plan.focusRoom(toPlanRoom(next.extraction?.room));
-    else plan.focusPin(finding.id);
-  }
-}
-
-const plan = createPlan(planSvg, {
-  onPlace: (x, y, room) => void placePin(x, y, room),
-  onSelectPin: (id) => {
-    selectedId = id;
-    render();
-    feed
-      .querySelector<HTMLElement>(`[data-id="${CSS.escape(id)}"]`)
-      ?.scrollIntoView({ block: "nearest" });
-  },
+photoInput.addEventListener("change", () => {
+  const files = [...(photoInput.files ?? [])];
+  photoInput.value = "";
+  if (photoTargetId) void attachFiles(photoTargetId, files);
 });
 
-document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape" && placingId !== null && !clearDialog.open) {
-    stopPlacing();
+let cameraStream: MediaStream | null = null;
+
+function stopCamera(): void {
+  cameraStream?.getTracks().forEach((track) => track.stop());
+  cameraStream = null;
+  cameraVideo.srcObject = null;
+}
+
+async function openCamera(findingId: string): Promise<void> {
+  const finding = findingById(findingId);
+  if (!finding) return;
+  photoTargetId = findingId;
+  cameraShoot.disabled = true;
+  cameraStatus.textContent = "Starting the camera.";
+  cameraDialog.showModal();
+
+  if (!navigator.mediaDevices?.getUserMedia) {
+    cameraStatus.textContent =
+      "This browser cannot open a camera here. Use Add photo to pick a file.";
+    return;
   }
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: "environment", width: { ideal: 1920 } },
+    });
+    // The dialog may have been closed while the permission prompt was open.
+    if (!cameraDialog.open) {
+      stream.getTracks().forEach((track) => track.stop());
+      return;
+    }
+    cameraStream = stream;
+    cameraVideo.srcObject = stream;
+    cameraShoot.disabled = false;
+    cameraStatus.textContent = `Photos are saved on this device for finding ${finding.seq}.`;
+  } catch (cause) {
+    const name = cause instanceof DOMException ? cause.name : "";
+    cameraStatus.textContent =
+      name === "NotAllowedError"
+        ? "Camera access was blocked. Allow the camera for this site, or use Add photo to pick a file."
+        : name === "NotFoundError"
+          ? "No camera was found. Use Add photo to pick a file."
+          : `The camera could not be started: ${cause instanceof Error ? cause.message : String(cause)}`;
+  }
+}
+
+cameraShoot.addEventListener("click", () => {
+  const findingId = photoTargetId;
+  if (!findingId || !findingById(findingId)) return;
+  cameraShoot.disabled = true;
+  void scaleVideoFrame(cameraVideo)
+    .then((image) => storePhoto(findingId, image))
+    .then(
+      () => {
+        cameraStatus.textContent = `Photo saved. ${plural(photosOf(findingId).length, "photo")} on this finding.`;
+        render();
+      },
+      (cause: unknown) => {
+        cameraStatus.textContent = photoProblem(cause);
+      },
+    )
+    .finally(() => {
+      cameraShoot.disabled = cameraStream === null;
+    });
+});
+cameraClose.addEventListener("click", () => cameraDialog.close());
+cameraDialog.addEventListener("close", stopCamera);
+
+/** The photo shown in the viewer. */
+let viewedPhoto: Photo | null = null;
+
+function openPhoto(photo: Photo, finding: Finding, index: number): void {
+  viewedPhoto = photo;
+  photoTitle.textContent = `Finding ${finding.seq}, photo ${index + 1}`;
+  const image = el("img", "photo-large");
+  image.src = photoUrl(photo);
+  image.width = photo.width;
+  image.height = photo.height;
+  image.alt = `Photo ${index + 1} attached to finding ${finding.seq}`;
+  photoFrame.replaceChildren(image);
+  photoDialog.showModal();
+}
+
+photoClose.addEventListener("click", () => photoDialog.close());
+photoDialog.addEventListener("close", () => {
+  viewedPhoto = null;
+  photoFrame.replaceChildren();
+});
+photoRemove.addEventListener("click", () => {
+  const photo = viewedPhoto;
+  if (!photo) return;
+  photoDialog.close();
+  photos.set(
+    photo.findingId,
+    photosOf(photo.findingId).filter((other) => other.id !== photo.id),
+  );
+  forgetPhotoUrl(photo.id);
+  void deletePhoto(photo.id).then(() => {
+    showFeedStatus("Photo removed.");
+    render();
+  });
 });
 
 // ------------------------------------------------------------------- network
 
 function describeNetwork(): string {
-  if (simulated) return "Offline (simulated): no cloud calls";
-  if (!navigator.onLine) return "Offline: no cloud calls";
+  if (simulated) return "Offline (simulated): on-device only";
+  if (!navigator.onLine) return "Offline: on-device only";
   return "Online: cloud polish on";
 }
 
-let hintTimer: ReturnType<typeof setTimeout> | undefined;
+let lostTimer: ReturnType<typeof setTimeout> | undefined;
 
 function applyNetwork(initial: boolean): void {
   const online = isOnline();
   const before = document.body.dataset.net;
   document.body.dataset.net = online ? "online" : "offline";
-  document.body.dataset.simulated = String(simulated);
   netText.textContent = describeNetwork();
 
   if (initial) return;
 
   if (before === "offline" && online) {
+    clearTimeout(lostTimer);
+    lostPlate.textContent = "";
     // Restart the wave animation.
     wave.classList.remove("is-running");
     void wave.offsetWidth;
     wave.classList.add("is-running");
     sync(true);
   } else if (before === "online" && !online) {
-    clearTimeout(hintTimer);
-    document.body.dataset.signalLost = "true";
-    hintTimer = setTimeout(() => {
-      delete document.body.dataset.signalLost;
-      render();
+    clearTimeout(lostTimer);
+    lostPlate.textContent =
+      availability === "available"
+        ? "Signal lost. Keep working: notes are structured on this device."
+        : "Signal lost. Keep working: notes are saved on this device.";
+    lostTimer = setTimeout(() => {
+      lostPlate.textContent = "";
     }, 6000);
   }
   render();
@@ -480,17 +792,18 @@ async function refreshAvailability(): Promise<void> {
 function renderNotice(): void {
   let text = "";
   let action = "";
+  let note = "";
 
   if (!configured) {
     text = `Firebase is not configured, so no model can be called. Copy .env.example to .env, fill in ${missingConfig().join(", ")}, then restart the dev server. Notes are still saved on this device.`;
   } else if (downloading) {
     text = noticeText.textContent ?? "";
   } else if (availability === "missing") {
-    text =
-      "This browser has no on-device model. Notes are structured in the cloud while you are online, and wait in the queue while you are offline. Use Chrome desktop 148 or later for on-device capture.";
+    note =
+      "No on-device model in this browser: notes are structured in the cloud, or wait while offline. Needs Chrome 148+.";
   } else if (availability === "unavailable") {
-    text =
-      "This device cannot run the on-device model. Notes are structured in the cloud while you are online, and wait in the queue while you are offline.";
+    note =
+      "This device cannot run the on-device model: notes are structured in the cloud, or wait while offline.";
   } else if (availability === "downloadable" || availability === "downloading") {
     text =
       "The on-device model is not downloaded yet. Download it once, while you have a connection, to capture findings offline.";
@@ -501,6 +814,11 @@ function renderNotice(): void {
   noticeText.textContent = text;
   noticeAction.hidden = action === "" || downloading;
   noticeAction.textContent = action;
+
+  const showingDefault =
+    captureStatus.textContent === "" || captureStatus.textContent === deviceNote;
+  deviceNote = note;
+  if (showingDefault) showCaptureStatus();
 }
 
 noticeAction.addEventListener("click", () => {
@@ -514,7 +832,9 @@ noticeAction.addEventListener("click", () => {
     .then(
       () => undefined,
       (cause: unknown) => {
-        captureStatus.textContent = `The on-device model could not be downloaded: ${cause instanceof Error ? cause.message : String(cause)}`;
+        showCaptureStatus(
+          `The on-device model could not be downloaded: ${cause instanceof Error ? cause.message : String(cause)}`,
+        );
       },
     )
     .then(async () => {
@@ -526,68 +846,79 @@ noticeAction.addEventListener("click", () => {
 
 // ---------------------------------------------------------------- rendering
 
-function pinState(finding: Finding): PlanPin["state"] {
+function pinState(finding: Finding): MapPin["state"] {
   return finding.polish
-    ? (finding.polish.severity.toLowerCase() as PlanPin["state"])
+    ? (finding.polish.severity.toLowerCase() as MapPin["state"])
     : "draft";
 }
 
 function pinLabel(finding: Finding): string {
   const label = finding.extraction?.item ?? "Finding";
-  return label.length > 24 ? `${label.slice(0, 23)}…` : label;
+  return label.length > 28 ? `${label.slice(0, 27)}…` : label;
 }
 
-function planPins(): PlanPin[] {
-  return findings
-    .filter((finding) => finding.pin)
-    .map((finding) => ({
-      id: finding.id,
-      seq: finding.seq,
-      x: finding.pin!.x,
-      y: finding.pin!.y,
-      label: pinLabel(finding),
-      state: pinState(finding),
-    }));
-}
-
-/** Worst reviewed severity per room. Rooms with no reviewed finding are absent. */
-function heatMap(): Partial<Record<PlanRoom, Severity>> {
-  const heat: Partial<Record<PlanRoom, Severity>> = {};
-  for (const finding of findings) {
-    if (!finding.polish) continue;
-    const room = finding.pin?.room ?? toPlanRoom(finding.extraction?.room);
-    if (!room) continue;
-    const known = heat[room];
-    if (
-      !known ||
-      SEVERITIES.indexOf(finding.polish.severity) > SEVERITIES.indexOf(known)
-    ) {
-      heat[room] = finding.polish.severity;
+function mapTiles(): MapTile[] {
+  return areas.map((area) => {
+    const inArea = findings.filter((finding) => finding.areaId === area.id);
+    let heat: Severity | null = null;
+    for (const finding of inArea) {
+      const severity = finding.polish?.severity;
+      if (
+        severity &&
+        (!heat || SEVERITIES.indexOf(severity) > SEVERITIES.indexOf(heat))
+      ) {
+        heat = severity;
+      }
     }
-  }
-  return heat;
+    return {
+      area,
+      heat,
+      pins: inArea.map((finding) => ({
+        id: finding.id,
+        seq: finding.seq,
+        label: pinLabel(finding),
+        state: pinState(finding),
+      })),
+    };
+  });
 }
 
-function renderPlan(): void {
-  plan.setPins(planPins(), selectedId);
-  plan.setHeat(heatMap());
-
-  const placing = placingId ? findingById(placingId) : undefined;
-  const suggested = toPlanRoom(placing?.extraction?.room);
-  plan.setPlacing(Boolean(placing), suggested);
-
-  if (placing) {
-    planHint.textContent = suggested
-      ? `Click the plan, or press Enter on a room, to pin finding ${placing.seq}. The note points to the ${ROOM_LABELS[suggested].toLowerCase()}. Escape skips.`
-      : `Click the plan, or press Enter on a room, to pin finding ${placing.seq}. Escape skips.`;
-  } else if (document.body.dataset.signalLost) {
-    planHint.textContent =
-      availability === "available"
-        ? "Connection lost. Keep working: notes are structured on this device."
-        : "Connection lost. Keep working: notes are saved on this device and structured when you are back online.";
-  } else {
-    planHint.textContent = "";
+function selectFinding(id: string, scrollCard: boolean): void {
+  selectedId = id;
+  render();
+  if (scrollCard) {
+    feed
+      .querySelector<HTMLElement>(`.card[data-id="${CSS.escape(id)}"]`)
+      ?.scrollIntoView({ block: "nearest" });
   }
+}
+
+const map = createMap(tilesHost, {
+  onRename: (areaId, name) => void renameArea(areaId, name),
+  onRemove: (areaId) => void removeArea(areaId),
+  onSelectPin: (id) => selectFinding(id, true),
+  onMove: (findingId, areaId) => void moveFinding(findingId, areaId),
+});
+
+function renderMap(): void {
+  map.update(mapTiles(), selectedId);
+  mapEmpty.hidden = areas.length > 0;
+
+  const open = preset().areas.filter((name) => !findArea(name));
+  suggestions.hidden = open.length === 0;
+  suggestionList.replaceChildren(
+    ...open.map((name) => {
+      const item = el("li");
+      const button = el("button", "suggestion", name);
+      button.type = "button";
+      button.setAttribute("aria-label", `Add area ${name}`);
+      button.addEventListener("click", () => {
+        void ensureArea(name, "preset").then(render);
+      });
+      item.append(button);
+      return item;
+    }),
+  );
 }
 
 function field(term: string, value: string): HTMLElement[] {
@@ -597,7 +928,7 @@ function field(term: string, value: string): HTMLElement[] {
 function actionButton(
   label: string,
   key: string,
-  onClick: (viaKeyboard: boolean) => void,
+  onClick: () => void,
   className = "quiet",
 ): HTMLButtonElement {
   const button = el("button", className, label);
@@ -605,10 +936,44 @@ function actionButton(
   button.dataset.focusKey = key;
   button.addEventListener("click", (event) => {
     event.stopPropagation();
-    // A click with no pointer position came from the keyboard.
-    onClick(event.detail === 0);
+    onClick();
   });
   return button;
+}
+
+/** A select that files the finding under another area, or a new one. */
+function areaSelect(finding: Finding): HTMLLabelElement {
+  const label = el("label", "area-select");
+  label.append(el("span", undefined, "Area"));
+  const select = el("select");
+  select.dataset.focusKey = `area:${finding.id}`;
+  if (finding.areaId === null) {
+    const none = el("option", undefined, "Not filed");
+    none.value = "";
+    select.append(none);
+  }
+  for (const area of areas) {
+    const option = el("option", undefined, area.name);
+    option.value = area.id;
+    select.append(option);
+  }
+  const fresh = el("option", undefined, "New area…");
+  fresh.value = NEW_AREA_VALUE;
+  select.append(fresh);
+  select.value = finding.areaId ?? "";
+  select.addEventListener("click", (event) => event.stopPropagation());
+  select.addEventListener("change", () => {
+    if (select.value === NEW_AREA_VALUE) {
+      void addBlankArea().then(async (area) => {
+        await moveFinding(finding.id, area.id);
+        map.editName(area.id);
+      });
+    } else if (select.value) {
+      void moveFinding(finding.id, select.value);
+    }
+  });
+  label.append(select);
+  return label;
 }
 
 function renderCard(finding: Finding): HTMLLIElement {
@@ -623,26 +988,22 @@ function renderCard(finding: Finding): HTMLLIElement {
   }
   card.addEventListener("click", () => {
     if (selectedId === finding.id) return;
-    selectedId = finding.id;
-    render();
+    selectFinding(finding.id, false);
   });
 
+  const area = areaById(finding.areaId);
   const head = el("div", "card-head");
   head.append(el("span", "card-number", String(finding.seq)));
   const title = el("h3", "card-title");
   title.textContent = finding.extraction
-    ? `${roomLabel(finding)}: ${finding.extraction.item}`
+    ? `${area?.name ?? "Not filed"}: ${finding.extraction.item}`
     : "New note";
   head.append(title);
-  if (finding.polish) {
-    const chip = el("span", "chip", finding.polish.severity);
-    chip.dataset.key = finding.polish.severity.toLowerCase();
-    head.append(chip);
-  } else {
-    const chip = el("span", "chip", "Draft");
-    chip.dataset.key = "draft";
-    head.append(chip);
-  }
+  const chip = el("span", "chip", finding.polish?.severity ?? "Draft");
+  chip.dataset.key = finding.polish
+    ? finding.polish.severity.toLowerCase()
+    : "draft";
+  head.append(chip);
   card.append(head);
 
   if (finding.polish) {
@@ -662,7 +1023,7 @@ function renderCard(finding: Finding): HTMLLIElement {
     const { item, issue, size_cm, water_related } = finding.extraction;
     const fields = el("dl", "fields");
     fields.append(
-      ...field("room", finding.extraction.room),
+      ...field("area", finding.extraction.area),
       ...field("item", item),
       ...field("issue", issue),
       ...field("size_cm", size_cm === null ? "null" : String(size_cm)),
@@ -679,6 +1040,30 @@ function renderCard(finding: Finding): HTMLLIElement {
 
   card.append(el("p", "card-note", finding.note));
 
+  const attached = photosOf(finding.id);
+  if (attached.length > 0) {
+    const strip = el("ul", "thumbs");
+    attached.forEach((photo, index) => {
+      const item = el("li");
+      const button = el("button", "thumb");
+      button.type = "button";
+      button.dataset.focusKey = `photo:${photo.id}`;
+      const image = el("img");
+      image.src = photoUrl(photo);
+      image.alt = `Photo ${index + 1} of finding ${finding.seq}`;
+      image.width = 64;
+      image.height = 64;
+      button.append(image);
+      button.addEventListener("click", (event) => {
+        event.stopPropagation();
+        openPhoto(photo, finding, index);
+      });
+      item.append(button);
+      strip.append(item);
+    });
+    card.append(strip);
+  }
+
   const steps = el("p", "card-steps");
   const addStep = (text: string, tier?: string): void => {
     const step = el("span", "step", text);
@@ -691,7 +1076,10 @@ function renderCard(finding: Finding): HTMLLIElement {
     addStep("Structuring");
   }
   if (finding.extractionTier) {
-    addStep(`Structured ${TIER_LABELS[finding.extractionTier]}`, finding.extractionTier);
+    addStep(
+      `Structured ${TIER_LABELS[finding.extractionTier]}${finding.extractedOffline ? ", offline" : ""}`,
+      finding.extractionTier,
+    );
   }
   if (finding.status === "polishing") {
     addStep("Polishing in cloud", "in_cloud");
@@ -700,6 +1088,7 @@ function renderCard(finding: Finding): HTMLLIElement {
   } else if (finding.status === "draft" && !isOnline()) {
     addStep("Polish waits for a connection");
   }
+  if (attached.length > 0) addStep(plural(attached.length, "photo"));
   card.append(steps);
 
   const problem = finding.captureError ?? finding.polishError;
@@ -716,17 +1105,14 @@ function renderCard(finding: Finding): HTMLLIElement {
   }
 
   const actions = el("div", "card-actions");
-  if (finding.extraction) {
-    const isPlacing = placingId === finding.id;
-    actions.append(
-      actionButton(
-        isPlacing ? "Cancel placing" : finding.pin ? "Move pin" : "Place on plan",
-        `place:${finding.id}`,
-        (viaKeyboard) =>
-          isPlacing ? stopPlacing() : startPlacing(finding.id, viaKeyboard),
-      ),
-    );
-  }
+  actions.append(areaSelect(finding));
+  actions.append(
+    actionButton("Add photo", `photo-add:${finding.id}`, () => {
+      photoTargetId = finding.id;
+      photoInput.click();
+    }),
+    actionButton("Camera", `camera:${finding.id}`, () => void openCamera(finding.id)),
+  );
   const canRetry =
     (finding.status === "queued" && finding.captureError !== null) ||
     (finding.status === "draft" && finding.polishError !== null && isOnline());
@@ -757,7 +1143,7 @@ function renderFeed(): void {
   feed.replaceChildren(...newestFirst.map(renderCard));
   freshlyPolished.clear();
 
-  if (focusKey) {
+  if (focusKey && !focusKey.startsWith("pin:")) {
     feed
       .querySelector<HTMLElement>(`[data-focus-key="${CSS.escape(focusKey)}"]`)
       ?.focus();
@@ -766,18 +1152,19 @@ function renderFeed(): void {
   const total = findings.length;
   const reviewed = findings.filter((finding) => finding.polish).length;
   feedEmpty.hidden = total > 0;
-  clearButton.hidden = total === 0;
   feedCount.textContent =
-    total === 0 ? "" : `${total} captured, ${reviewed} reviewed in cloud`;
-}
+    total === 0 ? "" : `${total} captured, ${reviewed} polished in cloud`;
 
-function median(values: number[]): number | null {
-  if (values.length === 0) return null;
-  const sorted = [...values].sort((a, b) => a - b);
-  const middle = Math.floor(sorted.length / 2);
-  return sorted.length % 2
-    ? sorted[middle]
-    : Math.round((sorted[middle - 1] + sorted[middle]) / 2);
+  // The queue is everything the cloud has not polished yet.
+  const waiting = total - reviewed;
+  queueText.hidden = total === 0;
+  queueText.dataset.state = waiting === 0 ? "done" : isOnline() ? "syncing" : "waiting";
+  queueText.textContent =
+    waiting === 0
+      ? `All ${plural(total, "finding")} polished`
+      : isOnline()
+        ? `${waiting} in queue, syncing`
+        : `${waiting} in queue for cloud`;
 }
 
 function networkLabel(record: CallRecord): string {
@@ -785,7 +1172,26 @@ function networkLabel(record: CallRecord): string {
   return record.browserOnline ? "online" : "offline";
 }
 
-function renderLog(): void {
+const STEP_LABELS: Record<CallRecord["step"], string> = {
+  structure: "Structure",
+  polish: "Polish",
+  photo: "Photo assist",
+};
+
+function renderDock(): void {
+  kpiList.replaceChildren(
+    ...computeKpis(findings, calls).map((kpi) => {
+      const cell = el("div", "kpi");
+      cell.dataset.key = kpi.key;
+      cell.append(
+        el("dt", undefined, kpi.label),
+        el("dd", "kpi-value", kpi.value),
+        el("dd", "kpi-detail", kpi.detail),
+      );
+      return cell;
+    }),
+  );
+
   const body = logTable.tBodies[0];
   const rows = [...calls].reverse().slice(0, LOG_ROWS).map((record) => {
     const row = document.createElement("tr");
@@ -796,7 +1202,7 @@ function renderLog(): void {
     };
     cell(new Date(record.at).toLocaleTimeString("en-US", { hourCycle: "h23" }));
     cell(`#${record.findingSeq}`);
-    cell(record.step === "structure" ? "Structure" : "Polish");
+    cell(STEP_LABELS[record.step]);
     cell(record.mode, "mode");
     cell(
       record.tier ? (record.tier === "on_device" ? "On device" : "Cloud") : "Failed",
@@ -811,61 +1217,86 @@ function renderLog(): void {
 
   logTable.hidden = calls.length === 0;
   logEmpty.hidden = calls.length > 0;
+}
 
-  const summarize = (tier: "on_device" | "in_cloud", label: string): string | null => {
-    const times = calls
-      .filter((record) => record.tier === tier)
-      .map((record) => record.ms);
-    const mid = median(times);
-    if (mid === null) return null;
-    return `${label}: ${times.length} ${times.length === 1 ? "call" : "calls"}, median ${mid.toLocaleString("en-US")} ms`;
-  };
-  logSummary.textContent = [
-    summarize("on_device", "On device"),
-    summarize("in_cloud", "Cloud"),
-  ]
-    .filter(Boolean)
-    .join(". ");
+function drawReport(): void {
+  if (!visit) return;
+  renderReport(paper, {
+    visit,
+    preset: preset(),
+    findings,
+    areas,
+    photosOf,
+    photoUrl,
+  });
 }
 
 function renderView(): void {
-  const report = location.hash === "#report";
-  document.body.dataset.view = report ? "report" : "capture";
-  captureView.hidden = report;
-  reportView.hidden = !report;
+  const view = !visit ? "setup" : location.hash === "#report" ? "report" : "capture";
+  document.body.dataset.view = view;
+  setupView.hidden = view !== "setup";
+  captureView.hidden = view !== "capture";
+  reportView.hidden = view !== "report";
+  visitBar.hidden = !visit;
+  viewTabs.hidden = !visit;
+  if (visit) {
+    if (document.activeElement !== siteInput) siteInput.value = visit.site;
+    visitType.textContent = visit.typeLabel;
+  }
   for (const [tab, current] of [
-    [tabCapture, !report],
-    [tabReport, report],
+    [tabCapture, view === "capture"],
+    [tabReport, view === "report"],
   ] as const) {
     if (current) tab.setAttribute("aria-current", "page");
     else tab.removeAttribute("aria-current");
   }
-  if (report) {
-    renderReport(paper, findings, siteInput.value.trim(), planPins());
-  }
+  if (view === "report") drawReport();
+}
+
+function renderExamples(): void {
+  examples.replaceChildren(
+    ...preset().examples.map((note) => {
+      const item = el("li");
+      const button = el("button", "example", note);
+      button.type = "button";
+      button.addEventListener("click", () => {
+        noteInput.value = note;
+        noteInput.focus();
+      });
+      item.append(button);
+      return item;
+    }),
+  );
 }
 
 function render(): void {
-  renderPlan();
+  renderMap();
   renderFeed();
-  renderLog();
+  renderDock();
   renderView();
 }
 
 // ------------------------------------------------------ delete, undo, clear
 
+/** Drops the photos of a finding whose delete can no longer be undone. */
+async function purgePhotos(findingId: string): Promise<void> {
+  for (const photo of photosOf(findingId)) forgetPhotoUrl(photo.id);
+  photos.delete(findingId);
+  await deletePhotosOf(findingId);
+}
+
 async function removeFinding(id: string): Promise<void> {
   const finding = findingById(id);
   if (!finding) return;
+  const previous = lastDeleted;
   findings = findings.filter((other) => other.id !== id);
-  if (placingId === id) placingId = null;
   if (selectedId === id) selectedId = null;
-  await deleteFinding(id);
   lastDeleted = finding;
+  await deleteFinding(id);
+  if (previous) await purgePhotos(previous.id);
 
   const undo = actionButton("Undo", "undo", () => void undoDelete(), "quiet");
-  feedStatus.replaceChildren(`Finding ${finding.seq} deleted. `, undo);
-  feedStatus.hidden = false;
+  showFeedStatus(`Finding ${finding.seq} deleted. `, undo);
   render();
   undo.focus();
 }
@@ -877,16 +1308,22 @@ async function undoDelete(): Promise<void> {
   // A step that was in flight when the finding was deleted never landed.
   if (finding.status === "structuring") finding.status = "queued";
   if (finding.status === "polishing") finding.status = "draft";
+  // Its area may have been removed or merged away in the meantime.
+  if (!areaById(finding.areaId)) finding.areaId = null;
+  if (finding.areaId === null && finding.extraction) {
+    finding.areaId = (await ensureArea(finding.extraction.area, "note")).id;
+  }
   await saveFinding(finding);
   findings.push(finding);
   findings.sort((a, b) => a.seq - b.seq);
-  feedStatus.textContent = `Finding ${finding.seq} restored.`;
+  showFeedStatus(`Finding ${finding.seq} restored.`);
   render();
   sync(false);
 }
 
 clearButton.addEventListener("click", () => {
-  clearText.textContent = `This deletes ${findings.length} ${findings.length === 1 ? "finding" : "findings"} and the routing log from this device. It cannot be undone.`;
+  const photoCount = [...photos.values()].reduce((sum, list) => sum + list.length, 0);
+  clearText.textContent = `This deletes ${plural(findings.length, "finding")}, ${plural(photoCount, "photo")}, ${plural(areas.length, "area")} and the routing log from this device. It cannot be undone.`;
   clearDialog.returnValue = "cancel";
   clearDialog.showModal();
 });
@@ -896,59 +1333,117 @@ clearDialog.addEventListener("close", () => {
   void (async () => {
     // Reset memory first, so a call that returns during the delete is dropped.
     generation += 1;
+    visit = null;
     findings = [];
+    areas = [];
     calls = [];
     selectedId = null;
-    placingId = null;
     lastDeleted = null;
-    await clearInspection();
-    feedStatus.hidden = true;
+    for (const id of [...photoUrls.keys()]) forgetPhotoUrl(id);
+    photos.clear();
+    await clearVisit();
+    showFeedStatus();
     captureStatus.textContent = "";
+    showCaptureStatus();
+    if (location.hash) history.replaceState(null, "", location.pathname);
+    render();
+    setupSite.focus();
+  })();
+});
+
+// --------------------------------------------------------------- visit setup
+
+function selectedPresetId(): string {
+  return (
+    setupPresets.querySelector<HTMLInputElement>("input:checked")?.value ??
+    DEFAULT_PRESET_ID
+  );
+}
+
+for (const option of PRESETS) {
+  const label = el("label", "preset");
+  const radio = el("input");
+  radio.type = "radio";
+  radio.name = "preset";
+  radio.value = option.id;
+  radio.checked = option.id === DEFAULT_PRESET_ID;
+  radio.addEventListener("change", () => {
+    setupCustom.hidden = selectedPresetId() !== CUSTOM_PRESET_ID;
+  });
+  const text = el("span", "preset-text");
+  text.append(
+    el("b", undefined, option.label),
+    el("span", undefined, option.description),
+  );
+  label.append(radio, text);
+  setupPresets.append(label);
+}
+
+setupView.addEventListener("submit", (event) => {
+  event.preventDefault();
+  const chosen = presetById(selectedPresetId());
+  const customLabel = setupCustomLabel.value.replace(/\s+/g, " ").trim();
+  if (chosen.id === CUSTOM_PRESET_ID && customLabel === "") {
+    setupStatus.textContent = "Name the visit type first.";
+    setupCustomLabel.focus();
+    return;
+  }
+  setupStatus.textContent = "";
+  const next: Visit = {
+    site: setupSite.value.replace(/\s+/g, " ").trim(),
+    presetId: chosen.id,
+    typeLabel: chosen.id === CUSTOM_PRESET_ID ? customLabel : chosen.label,
+    startedAt: new Date().toISOString(),
+  };
+  void saveVisit(next).then(() => {
+    visit = next;
+    setupSite.value = "";
+    setupCustomLabel.value = "";
+    renderExamples();
     render();
     noteInput.focus();
-  })();
+  });
+});
+
+siteInput.addEventListener("change", () => {
+  if (!visit) return;
+  visit.site = siteInput.value.replace(/\s+/g, " ").trim();
+  void saveVisit(visit);
 });
 
 // --------------------------------------------------------------------- start
 
-for (const note of EXAMPLE_NOTES) {
-  const item = el("li");
-  const button = el("button", "example", note);
-  button.type = "button";
-  button.addEventListener("click", () => {
-    noteInput.value = note;
-    noteInput.focus();
-  });
-  item.append(button);
-  examples.append(item);
-}
-
-siteInput.addEventListener("change", () => {
-  void setMeta("site", siteInput.value.trim());
-});
-
 printButton.addEventListener("click", () => window.print());
 // Printing from the capture view still prints the report.
-window.addEventListener("beforeprint", () => {
-  renderReport(paper, findings, siteInput.value.trim(), planPins());
-});
+window.addEventListener("beforeprint", drawReport);
 window.addEventListener("hashchange", renderView);
 
 async function start(): Promise<void> {
   applyNetwork(true);
-  siteInput.value = DEFAULT_SITE;
 
   try {
-    const [storedFindings, storedCalls, site] = await Promise.all([
-      loadFindings(),
-      loadCalls(),
-      getMeta("site"),
-    ]);
+    const [storedVisit, storedAreas, storedFindings, storedPhotos, storedCalls] =
+      await Promise.all([
+        loadVisit(),
+        loadAreas(),
+        loadFindings(),
+        loadPhotos(),
+        loadCalls(),
+      ]);
+    visit = storedVisit;
+    areas = storedAreas;
     findings = storedFindings;
     calls = storedCalls;
-    if (site !== undefined) siteInput.value = site;
+    for (const photo of storedPhotos) {
+      // A photo whose finding is gone was left by a delete that was never undone.
+      if (!storedFindings.some((finding) => finding.id === photo.findingId)) {
+        void deletePhoto(photo.id);
+        continue;
+      }
+      photos.set(photo.findingId, [...photosOf(photo.findingId), photo]);
+    }
   } catch (cause) {
-    captureStatus.textContent = `Saved findings could not be loaded: ${cause instanceof Error ? cause.message : String(cause)}`;
+    setupStatus.textContent = `Saved findings could not be loaded: ${cause instanceof Error ? cause.message : String(cause)}`;
   }
 
   // A step that was in flight when the page closed never landed.
@@ -958,6 +1453,7 @@ async function start(): Promise<void> {
     shownCards.add(finding.id);
   }
 
+  renderExamples();
   render();
   await refreshAvailability();
   sync(true);

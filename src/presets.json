@@ -1,0 +1,72 @@
+[
+  {
+    "id": "rental",
+    "label": "Rental move-out",
+    "description": "Condition check of a unit when a tenant leaves.",
+    "reportTitle": "Move-out inspection report",
+    "findingsHeading": "Condition findings",
+    "areas": ["Entry", "Living room", "Kitchen", "Bathroom", "Bedroom"],
+    "hint": "This is a rental move-out inspection. Areas are rooms of a home. Items are fixtures, surfaces and appliances.",
+    "examples": [
+      "kitchen outlet next to sink has no gfci",
+      "water stain on bathroom ceiling about 30 cm wide",
+      "hairline crack on living room north wall, roughly 16 inches"
+    ]
+  },
+  {
+    "id": "warehouse",
+    "label": "Warehouse safety walk-through",
+    "description": "Hazards and defects across a storage or logistics site.",
+    "reportTitle": "Safety walk-through report",
+    "findingsHeading": "Hazards and defects",
+    "areas": ["Loading dock", "Storage", "Office", "Restroom"],
+    "hint": "This is a warehouse safety walk-through. Areas are zones of an industrial site. Items are equipment, racking, doors, floors and safety gear.",
+    "examples": [
+      "loading dock door seal torn along the bottom edge",
+      "storage rack upright bent about 6 inches near aisle 3",
+      "extension cord running across the office walkway"
+    ]
+  },
+  {
+    "id": "construction",
+    "label": "Construction punch list",
+    "description": "Open items before a build is handed over.",
+    "reportTitle": "Punch list",
+    "findingsHeading": "Open items",
+    "areas": ["Lobby", "Stairwell", "Unit 101", "Roof", "Mechanical room"],
+    "hint": "This is a construction punch list. Areas are parts of a building under construction. Items are finishes, fittings and installations that are incomplete or defective.",
+    "examples": [
+      "stairwell handrail loose at the second floor landing",
+      "unit 101 bathroom tile grout missing, about 2 ft along the tub",
+      "roof drain blocked with debris, standing water"
+    ]
+  },
+  {
+    "id": "restaurant",
+    "label": "Restaurant health check",
+    "description": "Food safety and hygiene observations.",
+    "reportTitle": "Health check report",
+    "findingsHeading": "Observations",
+    "areas": ["Kitchen", "Walk-in cooler", "Dry storage", "Dining room", "Restroom"],
+    "hint": "This is a restaurant health check. Areas are parts of a food service site. Items are equipment, surfaces, food storage and hygiene stations.",
+    "examples": [
+      "walk-in cooler door gasket torn, door does not seal",
+      "kitchen hand sink has no soap",
+      "dry storage boxes stored directly on the floor"
+    ]
+  },
+  {
+    "id": "custom",
+    "label": "Custom",
+    "description": "Any other site visit. You name it, areas come from your notes.",
+    "reportTitle": "Site visit report",
+    "findingsHeading": "Findings",
+    "areas": [],
+    "hint": "This is a site visit. Areas are the places on the site that the note mentions.",
+    "examples": [
+      "server room door does not latch",
+      "parking lot light pole 4 is out",
+      "water pooling by the north entrance, about 1 m wide"
+    ]
+  }
+]

@@ -5,7 +5,7 @@ import {
   type Route,
 } from "./ai/models";
 import { blocker, run, type RunRecord } from "./ai/run";
-import { parseExtraction, parsePolish } from "./ai/schema";
+import { extractionPrompt, parseExtraction, parsePolish } from "./ai/schema";
 
 function byId<T extends HTMLElement>(id: string): T {
   const element = document.getElementById(id);
@@ -189,11 +189,22 @@ async function whileBusy(
 }
 
 /** Builds the prompt for a route, or explains why there is nothing to send. */
-function buildPrompt(route: Route): { prompt: string } | { problem: string } {
+function buildPrompt(
+  route: Route,
+): { prompt: string; note: string } | { problem: string } {
   const note = noteInput.value.trim();
 
   if (route !== "polish") {
-    return note ? { prompt: note } : { problem: "Write a note first." };
+    if (!note) return { problem: "Write a note first." };
+    // The bench has no visit, so the prompt carries a neutral context.
+    return {
+      note,
+      prompt: extractionPrompt(note, {
+        visitType: "Site visit",
+        hint: "Areas are the places on the site that the note mentions.",
+        knownAreas: [],
+      }),
+    };
   }
   if (!lastExtraction || lastExtraction.note !== note) {
     return {
@@ -201,7 +212,8 @@ function buildPrompt(route: Route): { prompt: string } | { problem: string } {
     };
   }
   return {
-    prompt: `Inspector's note: ${lastExtraction.note}\nExtracted finding: ${lastExtraction.json}`,
+    note,
+    prompt: `Visit type: Site visit\nInspector's note: ${lastExtraction.note}\nExtracted finding: ${lastExtraction.json}`,
   };
 }
 
@@ -226,7 +238,7 @@ async function handleRun(route: Route): Promise<void> {
     if (route !== "polish" && record.text !== null) {
       try {
         parseExtraction(record.text);
-        lastExtraction = { note: built.prompt, json: record.text };
+        lastExtraction = { note: built.note, json: record.text };
       } catch {
         // Invalid output is shown in the log; it is not kept for polish.
       }

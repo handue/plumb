@@ -6,26 +6,31 @@
     <meta name="color-scheme" content="dark" />
     <meta
       name="description"
-      content="Plumb captures inspection findings with no connection, using an on-device model, and turns them into a report once you are back online."
+      content="Plumb captures site visit findings with no connection, using an on-device model, and turns them into a report once you are back online."
     />
-    <title>Plumb: offline-first inspection capture</title>
+    <title>Plumb: offline-first site visit capture</title>
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   </head>
-  <body data-net="online" data-view="capture">
+  <body data-net="online" data-view="setup">
     <header class="topbar">
       <span class="wordmark">Plumb</span>
 
-      <label class="site">
-        <span class="visually-hidden">Site name</span>
-        <input id="site" type="text" maxlength="80" autocomplete="off" spellcheck="false" />
-      </label>
+      <div id="visit-bar" class="visit-bar" hidden>
+        <label class="site">
+          <span class="visually-hidden">Site name</span>
+          <input id="site" type="text" maxlength="80" autocomplete="off" spellcheck="false" />
+        </label>
+        <span id="visit-type" class="visit-type"></span>
+      </div>
 
-      <nav class="views" aria-label="View">
+      <nav id="views" class="views" aria-label="View" hidden>
         <a id="tab-capture" href="#capture">Capture</a>
         <a id="tab-report" href="#report">Report</a>
       </nav>
 
       <span class="spacer"></span>
+
+      <p id="queue" class="queue" role="status" hidden></p>
 
       <p id="net-status" class="net" role="status">
         <svg class="bars" viewBox="0 0 26 20" width="26" height="20" aria-hidden="true">
@@ -53,32 +58,82 @@
     </div>
 
     <main>
-      <div id="capture-view" class="workspace">
-        <section class="panel plan-panel" aria-labelledby="plan-title">
+      <form id="setup-view" class="setup" autocomplete="off" hidden>
+        <h1>Start a site visit</h1>
+        <p class="setup-lead">
+          Plumb works with no connection. Type short notes as you walk the
+          site. Each note is turned into fields on this device, and areas of
+          the site appear as your notes mention them. When you are back
+          online, the cloud writes the report wording and suggests a severity.
+        </p>
+
+        <label class="setup-field" for="setup-site">Site name</label>
+        <input
+          id="setup-site"
+          type="text"
+          maxlength="80"
+          placeholder="For example: Maple St. Warehouse"
+          spellcheck="false"
+        />
+
+        <fieldset class="setup-types">
+          <legend>Visit type</legend>
+          <p class="hint">
+            The visit type sets suggested areas, the wording hint for the
+            on-device model, and the report headings. You can change areas at
+            any time.
+          </p>
+          <div id="setup-presets" class="preset-list"></div>
+        </fieldset>
+
+        <div id="setup-custom" class="setup-custom" hidden>
+          <label class="setup-field" for="setup-custom-label">Name this visit type</label>
+          <input
+            id="setup-custom-label"
+            type="text"
+            maxlength="60"
+            placeholder="For example: Fire door survey"
+            spellcheck="false"
+          />
+        </div>
+
+        <p id="setup-status" class="hint" role="status"></p>
+        <button type="submit" class="primary">Start visit</button>
+      </form>
+
+      <div id="capture-view" class="workspace" hidden>
+        <section class="panel map-panel" aria-labelledby="map-title">
           <div class="panel-head">
-            <h2 id="plan-title">Floor plan</h2>
-            <p id="plan-hint" class="hint" role="status"></p>
-            <ul class="legend" aria-label="Pin colors">
-              <li data-key="draft">Draft</li>
-              <li data-key="low">Low</li>
-              <li data-key="moderate">Moderate</li>
-              <li data-key="high">High</li>
-            </ul>
+            <h2 id="map-title">Site map</h2>
+            <p class="hint">Areas come from your notes. The layout is schematic, not a floor plan.</p>
+            <button id="add-area" type="button">Add area</button>
           </div>
 
-          <div class="plan-stage">
-            <svg id="plan" class="plan" role="group" aria-label="Floor plan with finding pins"></svg>
+          <div class="map-stage">
+            <div id="tiles" class="tiles"></div>
+            <div id="map-empty" class="map-empty">
+              <p>
+                No areas yet. Write a note that names a place, such as
+                “loading dock door seal torn”, and its area appears here.
+              </p>
+            </div>
+            <p id="lost" class="lost" role="status"></p>
             <div id="wave" class="wave" aria-hidden="true"></div>
           </div>
 
+          <div id="suggestions" class="suggestions" hidden>
+            <span id="suggestions-label">Suggested areas</span>
+            <ul id="suggestion-list" aria-labelledby="suggestions-label"></ul>
+          </div>
+
           <form id="capture-form" class="capture" autocomplete="off">
-            <label for="note">New finding</label>
+            <label for="note" class="visually-hidden">New finding</label>
             <div class="capture-row">
               <input
                 id="note"
                 type="text"
                 maxlength="300"
-                placeholder="Type what you see, for example: water stain on bathroom ceiling"
+                placeholder="Type what you see and where"
                 spellcheck="false"
               />
               <button type="submit" class="primary">Add finding</button>
@@ -91,15 +146,14 @@
           <div class="panel-head">
             <h2 id="feed-title">Findings</h2>
             <p id="feed-count" class="hint"></p>
-            <button id="clear" type="button" class="quiet" hidden>New inspection</button>
+            <button id="clear" type="button" class="quiet">New visit</button>
           </div>
           <p id="feed-status" class="feed-status" role="status" hidden></p>
           <div id="feed-empty" class="empty">
             <p>
-              No findings yet. Type a short note below the plan. It is saved
-              on this device first, then structured into fields: on the
-              device when its model is ready, otherwise in the cloud once you
-              are online.
+              No findings yet. A note is saved on this device first, then
+              structured into fields: on the device when its model is ready,
+              otherwise in the cloud once you are online.
             </p>
             <p class="empty-label">Notes to try</p>
             <ul id="examples" class="examples"></ul>
@@ -107,31 +161,33 @@
           <ol id="feed" class="feed"></ol>
         </section>
 
-        <section class="panel log-panel" aria-labelledby="log-title">
-          <div class="panel-head">
-            <h2 id="log-title">Routing log</h2>
-            <p id="log-summary" class="hint"></p>
-            <a class="quiet" href="/bench.html">Routing bench</a>
-          </div>
-          <p id="log-empty" class="hint">
-            Every model call appears here with the tier that answered and the
-            time it took, measured in this browser.
-          </p>
-          <div class="scroll">
-            <table id="log" hidden>
-              <thead>
-                <tr>
-                  <th scope="col">Time</th>
-                  <th scope="col">Finding</th>
-                  <th scope="col">Step</th>
-                  <th scope="col">Inference mode</th>
-                  <th scope="col">Answered by</th>
-                  <th scope="col" class="num">Latency</th>
-                  <th scope="col">Network</th>
-                </tr>
-              </thead>
-              <tbody></tbody>
-            </table>
+        <section class="panel dock" aria-label="Measured figures and routing log">
+          <dl id="kpis" class="kpis"></dl>
+          <div class="log-box">
+            <div class="log-head">
+              <h2 id="log-title">Routing log</h2>
+              <a class="quiet" href="/bench.html">Routing bench</a>
+            </div>
+            <p id="log-empty" class="hint">
+              Every model call appears here with the tier that answered and
+              the time it took, measured in this browser.
+            </p>
+            <div class="scroll">
+              <table id="log" aria-labelledby="log-title" hidden>
+                <thead>
+                  <tr>
+                    <th scope="col">Time</th>
+                    <th scope="col">Finding</th>
+                    <th scope="col">Step</th>
+                    <th scope="col">Inference mode</th>
+                    <th scope="col">Answered by</th>
+                    <th scope="col" class="num">Latency</th>
+                    <th scope="col">Network</th>
+                  </tr>
+                </thead>
+                <tbody></tbody>
+              </table>
+            </div>
           </div>
         </section>
       </div>
@@ -141,19 +197,40 @@
           <a href="#capture" class="button">Back to capture</a>
           <button id="print" type="button" class="primary">Print or save as PDF</button>
         </div>
-        <article id="paper" class="paper" aria-label="Inspection report"></article>
+        <article id="paper" class="paper" aria-label="Site visit report"></article>
       </div>
     </main>
 
+    <input id="photo-input" type="file" accept="image/*" capture="environment" multiple hidden />
+
     <dialog id="clear-dialog" class="dialog" aria-labelledby="clear-title">
       <form method="dialog">
-        <h2 id="clear-title">Start a new inspection?</h2>
+        <h2 id="clear-title">Start a new visit?</h2>
         <p id="clear-text"></p>
         <div class="dialog-actions">
-          <button value="cancel" type="submit">Keep findings</button>
+          <button value="cancel" type="submit">Keep this visit</button>
           <button value="confirm" type="submit" class="danger">Delete and start new</button>
         </div>
       </form>
+    </dialog>
+
+    <dialog id="camera-dialog" class="dialog dialog-wide" aria-labelledby="camera-title">
+      <h2 id="camera-title">Take a photo</h2>
+      <video id="camera-video" class="camera-video" autoplay playsinline muted></video>
+      <p id="camera-status" class="hint" role="status"></p>
+      <div class="dialog-actions">
+        <button id="camera-close" type="button">Close</button>
+        <button id="camera-shoot" type="button" class="primary">Take photo</button>
+      </div>
+    </dialog>
+
+    <dialog id="photo-dialog" class="dialog dialog-wide" aria-labelledby="photo-title">
+      <h2 id="photo-title"></h2>
+      <div id="photo-frame" class="photo-frame"></div>
+      <div class="dialog-actions">
+        <button id="photo-remove" type="button" class="danger-quiet">Remove photo</button>
+        <button id="photo-close" type="button">Close</button>
+      </div>
     </dialog>
 
     <script type="module" src="/src/app.ts"></script>

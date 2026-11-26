@@ -1,6 +1,6 @@
 import { SEVERITIES, type Severity } from "./ai/schema";
-import { createPlan, ROOM_LABELS, type PlanPin } from "./plan";
-import type { Finding } from "./store";
+import type { Preset } from "./presets";
+import type { Area, Finding, Photo, Visit } from "./store";
 
 function el<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -17,13 +17,6 @@ function plural(count: number, word: string): string {
   return `${count} ${word}${count === 1 ? "" : "s"}`;
 }
 
-/** Room shown for a finding: the pinned room wins over the extracted one. */
-export function roomLabel(finding: Finding): string {
-  if (finding.pin) return ROOM_LABELS[finding.pin.room];
-  if (finding.extraction) return ROOM_LABELS[finding.extraction.room];
-  return "Not structured";
-}
-
 /** High first, then Moderate, Low, and findings with no severity yet. */
 function reportOrder(a: Finding, b: Finding): number {
   const rank = (finding: Finding): number =>
@@ -31,16 +24,24 @@ function reportOrder(a: Finding, b: Finding): number {
   return rank(b) - rank(a) || a.seq - b.seq;
 }
 
+export interface ReportData {
+  visit: Visit;
+  preset: Preset;
+  findings: Finding[];
+  areas: Area[];
+  photosOf(findingId: string): Photo[];
+  photoUrl(photo: Photo): string;
+}
+
 /**
  * Builds the printable report from what is stored. It only states what the
  * data shows: findings without a cloud review are listed as such.
  */
-export function renderReport(
-  paper: HTMLElement,
-  findings: Finding[],
-  site: string,
-  pins: PlanPin[],
-): void {
+export function renderReport(paper: HTMLElement, data: ReportData): void {
+  const { visit, preset, findings, areas } = data;
+  const areaName = (finding: Finding): string =>
+    areas.find((area) => area.id === finding.areaId)?.name ?? "Not filed";
+
   const polished = findings.filter((finding) => finding.polish);
   const waiting = findings.length - polished.length;
   const count = (severity: Severity): number =>
@@ -49,8 +50,8 @@ export function renderReport(
   const header = el("header", "paper-head");
   const titles = el("div");
   titles.append(
-    el("h1", undefined, "Inspection report"),
-    el("p", "paper-site", site || "Unnamed site"),
+    el("h1", undefined, preset.reportTitle),
+    el("p", "paper-site", visit.site || "Unnamed site"),
   );
   const complete = findings.length > 0 && waiting === 0;
   const stamp = el(
@@ -60,10 +61,19 @@ export function renderReport(
   );
   header.append(titles, stamp);
 
+  const photoCount = findings.reduce(
+    (sum, finding) => sum + data.photosOf(finding.id).length,
+    0,
+  );
   const meta = el(
     "p",
     "paper-meta",
-    `${new Date().toLocaleDateString("en-US", { dateStyle: "long" })}. ${plural(findings.length, "finding")}.`,
+    [
+      visit.typeLabel,
+      new Date().toLocaleDateString("en-US", { dateStyle: "long" }),
+      plural(findings.length, "finding"),
+      ...(photoCount > 0 ? [plural(photoCount, "photo")] : []),
+    ].join(", ") + ".",
   );
 
   paper.replaceChildren(header, meta);
@@ -79,55 +89,61 @@ export function renderReport(
     return;
   }
 
-  const summary = el("dl", "paper-summary");
-  const addSummary = (label: string, value: number, key: string): void => {
-    const cell = el("div");
-    cell.dataset.key = key;
-    cell.append(el("dt", undefined, label), el("dd", undefined, String(value)));
-    summary.append(cell);
-  };
-  addSummary("High", count("High"), "high");
-  addSummary("Moderate", count("Moderate"), "moderate");
-  addSummary("Low", count("Low"), "low");
-  if (waiting > 0) addSummary("Not reviewed yet", waiting, "draft");
+  // Summary: one sentence, then the count per area.
+  const parts = [
+    `${count("High")} high`,
+    `${count("Moderate")} moderate`,
+    `${count("Low")} low`,
+  ];
+  const summary = el("div", "paper-summary");
+  const sentence = el("p");
+  sentence.append(el("b", undefined, "Summary: "));
+  sentence.append(
+    polished.length === 0
+      ? "No finding has been reviewed yet."
+      : `${parts.join(", ")}.`,
+  );
+  if (waiting > 0) {
+    sentence.append(
+      ` ${plural(waiting, "finding")} ${waiting === 1 ? "has" : "have"} no severity yet and ${waiting === 1 ? "is" : "are"} marked as not reviewed.`,
+    );
+  }
+  summary.append(sentence);
+
+  const areaList = el("ul", "paper-areas");
+  for (const area of areas) {
+    const inArea = findings.filter((finding) => finding.areaId === area.id);
+    if (inArea.length === 0) continue;
+    const worst = inArea.reduce<Severity | null>((known, finding) => {
+      const severity = finding.polish?.severity;
+      if (!severity) return known;
+      return !known || SEVERITIES.indexOf(severity) > SEVERITIES.indexOf(known)
+        ? severity
+        : known;
+    }, null);
+    const item = el("li");
+    item.dataset.key = worst ? worst.toLowerCase() : "draft";
+    item.append(
+      el("b", undefined, area.name),
+      el("span", undefined, plural(inArea.length, "finding")),
+    );
+    areaList.append(item);
+  }
+  if (areaList.childElementCount > 0) summary.append(areaList);
   paper.append(summary);
 
-  const figure = el("figure", "paper-plan");
-  const drawing = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  drawing.setAttribute("class", "plan plan-print");
-  drawing.setAttribute("role", "img");
-  drawing.setAttribute(
-    "aria-label",
-    "Floor plan with numbered pins for each finding",
-  );
-  createPlan(drawing).setPins(pins, null);
-  figure.append(drawing);
-  const unpinned = findings.filter((finding) => !finding.pin).length;
-  figure.append(
-    el(
-      "figcaption",
-      undefined,
-      unpinned > 0
-        ? `Numbers match the findings below. ${plural(unpinned, "finding")} without a pin ${unpinned === 1 ? "is" : "are"} not on the plan.`
-        : "Numbers match the findings below.",
-    ),
-  );
-  paper.append(figure);
+  paper.append(el("h2", "paper-heading", preset.findingsHeading));
 
   const list = el("ol", "paper-findings");
   for (const finding of [...findings].sort(reportOrder)) {
     const item = el("li");
     const severity = finding.polish?.severity;
-    const chip = el(
-      "span",
-      "chip",
-      severity ?? "Not reviewed",
-    );
+    const chip = el("span", "chip", severity ?? "Not reviewed");
     chip.dataset.key = severity ? severity.toLowerCase() : "draft";
 
     const body = el("div", "paper-finding");
     const lead = el("p");
-    lead.append(el("b", undefined, `${finding.seq}. ${roomLabel(finding)}. `));
+    lead.append(el("b", undefined, `${finding.seq}. ${areaName(finding)}. `));
     if (finding.polish) {
       lead.append(finding.polish.sentence);
     } else if (finding.extraction) {
@@ -145,20 +161,41 @@ export function renderReport(
     if (flags.length > 0) body.append(el("p", "paper-flags", flags.join(", ")));
 
     body.append(el("p", "paper-note", `Inspector's note: "${finding.note}"`));
+
+    const photos = data.photosOf(finding.id);
+    if (photos.length > 0) {
+      const strip = el("div", "paper-photos");
+      photos.forEach((photo, index) => {
+        const image = el("img");
+        image.src = data.photoUrl(photo);
+        image.width = photo.width;
+        image.height = photo.height;
+        image.alt = `Photo ${index + 1} of finding ${finding.seq}, attached by the inspector`;
+        strip.append(image);
+      });
+      body.append(strip);
+    }
+
     item.append(chip, body);
     list.append(item);
   }
   paper.append(list);
 
+  const structured = findings.filter((finding) => finding.extraction).length;
   const onDevice = findings.filter(
     (finding) => finding.extractionTier === "on_device",
   ).length;
-  const structured = findings.filter((finding) => finding.extraction).length;
+  const offline = findings.filter(
+    (finding) => finding.extractedOffline && finding.extractionTier === "on_device",
+  ).length;
   const provenance = [
-    `${onDevice} of ${plural(structured, "structured note")} ${onDevice === 1 ? "was" : "were"} turned into fields on the inspector's device, with no connection needed.`,
+    `${onDevice} of ${plural(structured, "structured note")} ${onDevice === 1 ? "was" : "were"} turned into fields on the inspector's device${offline > 0 ? `, ${offline} of them with no connection` : ""}.`,
     polished.length > 0
       ? "Report wording and severity were written by Gemini in the cloud. Both steps ran through Firebase AI Logic."
       : "Report wording and severity are added by Gemini in the cloud once there is a connection.",
+    ...(photoCount > 0
+      ? ["Photos were attached by the inspector and were not analyzed by a model."]
+      : []),
     "Severity is a model's suggestion. An inspector should review this report before it is sent.",
   ];
   paper.append(el("p", "paper-foot", provenance.join(" ")));

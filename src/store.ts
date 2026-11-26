@@ -1,6 +1,5 @@
 import { openDB, type DBSchema, type IDBPDatabase } from "idb";
 import type { Extraction, Polish } from "./ai/schema";
-import type { PlanRoom } from "./plan";
 
 /** Tier that answered a model call, as reported by the SDK. */
 export type Tier = "on_device" | "in_cloud";
@@ -21,12 +20,18 @@ export type FindingStatus =
   | "polishing"
   | "polished";
 
-export interface Pin {
-  /** Position in floor plan units. */
-  x: number;
-  y: number;
-  /** Room under the pin. Set by where the inspector clicked, not by a model. */
-  room: PlanRoom;
+/** How an area came to exist. */
+export type AreaOrigin = "note" | "manual" | "preset";
+
+/**
+ * A place on the site, shown as a tile. Areas are schematic: they have a name
+ * and an order, not a position or a size on a real floor plan.
+ */
+export interface Area {
+  id: string;
+  name: string;
+  origin: AreaOrigin;
+  createdAt: string;
 }
 
 export interface Finding {
@@ -38,11 +43,27 @@ export interface Finding {
   status: FindingStatus;
   extraction: Extraction | null;
   extractionTier: Tier | null;
+  /** True if the fields were extracted while the app was offline. */
+  extractedOffline: boolean;
   /** Why the note could not be structured yet, if it could not. */
   captureError: string | null;
-  pin: Pin | null;
+  /** The tile the pin sits in. Null until the note is structured or filed. */
+  areaId: string | null;
+  /** True once the inspector has filed the finding by hand. */
+  areaSetByUser: boolean;
   polish: Polish | null;
   polishError: string | null;
+}
+
+/** A photo the inspector attached to a finding. Stored on this device. */
+export interface Photo {
+  id: string;
+  findingId: string;
+  /** Downscaled JPEG. */
+  blob: Blob;
+  width: number;
+  height: number;
+  createdAt: string;
 }
 
 /** One measured model call, kept for the routing log. */
@@ -50,11 +71,13 @@ export interface CallRecord {
   id?: number;
   at: string;
   findingSeq: number;
-  step: "structure" | "polish";
+  step: "structure" | "polish" | "photo";
   /** Firebase AI Logic inference mode the call was made with. */
   mode: string;
   tier: Tier | null;
   ms: number;
+  /** UTF-8 size of the prompt text handed to the SDK. */
+  promptBytes: number;
   /** What the browser reported when the call started. */
   browserOnline: boolean;
   /** True if the "Simulate offline" demo control was on. */
@@ -62,8 +85,23 @@ export interface CallRecord {
   error: string | null;
 }
 
+/** The visit in progress. */
+export interface Visit {
+  site: string;
+  presetId: string;
+  /** Visit type as shown, which for a custom visit is what the user typed. */
+  typeLabel: string;
+  startedAt: string;
+}
+
 interface PlumbDB extends DBSchema {
   findings: { key: string; value: Finding };
+  areas: { key: string; value: Area };
+  photos: {
+    key: string;
+    value: Photo;
+    indexes: { findingId: string };
+  };
   calls: { key: number; value: CallRecord };
   meta: { key: string; value: string };
 }
@@ -71,14 +109,25 @@ interface PlumbDB extends DBSchema {
 let dbPromise: Promise<IDBPDatabase<PlumbDB>> | null = null;
 
 function db(): Promise<IDBPDatabase<PlumbDB>> {
-  dbPromise ??= openDB<PlumbDB>("plumb", 1, {
-    upgrade(database) {
-      database.createObjectStore("findings", { keyPath: "id" });
-      database.createObjectStore("calls", {
-        keyPath: "id",
-        autoIncrement: true,
-      });
-      database.createObjectStore("meta");
+  dbPromise ??= openDB<PlumbDB>("plumb", 2, {
+    upgrade(database, oldVersion) {
+      // Version 1 stored pins on a fixed floor plan. Nothing from it carries
+      // over to areas, so its stores are rebuilt.
+      if (oldVersion < 2) {
+        for (const name of [...database.objectStoreNames]) {
+          database.deleteObjectStore(name);
+        }
+        database.createObjectStore("findings", { keyPath: "id" });
+        database.createObjectStore("areas", { keyPath: "id" });
+        database
+          .createObjectStore("photos", { keyPath: "id" })
+          .createIndex("findingId", "findingId");
+        database.createObjectStore("calls", {
+          keyPath: "id",
+          autoIncrement: true,
+        });
+        database.createObjectStore("meta");
+      }
     },
   });
   return dbPromise;
@@ -93,8 +142,46 @@ export async function saveFinding(finding: Finding): Promise<void> {
   await (await db()).put("findings", finding);
 }
 
+/** Deletes a finding. Its photos are kept until `deletePhotosOf` is called. */
 export async function deleteFinding(id: string): Promise<void> {
   await (await db()).delete("findings", id);
+}
+
+export async function loadAreas(): Promise<Area[]> {
+  const all = await (await db()).getAll("areas");
+  return all.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+export async function saveArea(area: Area): Promise<void> {
+  await (await db()).put("areas", area);
+}
+
+export async function deleteArea(id: string): Promise<void> {
+  await (await db()).delete("areas", id);
+}
+
+export async function loadPhotos(): Promise<Photo[]> {
+  const all = await (await db()).getAll("photos");
+  return all.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+}
+
+/** Throws a `QuotaExceededError` DOMException when the device is full. */
+export async function savePhoto(photo: Photo): Promise<void> {
+  const database = await db();
+  const tx = database.transaction("photos", "readwrite");
+  // The quota error surfaces on the transaction, not on the put request.
+  await Promise.all([tx.store.put(photo), tx.done]);
+}
+
+export async function deletePhoto(id: string): Promise<void> {
+  await (await db()).delete("photos", id);
+}
+
+export async function deletePhotosOf(findingId: string): Promise<void> {
+  const database = await db();
+  const tx = database.transaction("photos", "readwrite");
+  const keys = await tx.store.index("findingId").getAllKeys(findingId);
+  await Promise.all([...keys.map((key) => tx.store.delete(key)), tx.done]);
 }
 
 export async function loadCalls(): Promise<CallRecord[]> {
@@ -114,13 +201,35 @@ export async function setMeta(key: string, value: string): Promise<void> {
   await (await db()).put("meta", value, key);
 }
 
-/** Removes every finding and call. The site name is kept. */
-export async function clearInspection(): Promise<void> {
+const VISIT_KEY = "visit";
+
+export async function loadVisit(): Promise<Visit | null> {
+  const raw = await getMeta(VISIT_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as Visit;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveVisit(visit: Visit): Promise<void> {
+  await setMeta(VISIT_KEY, JSON.stringify(visit));
+}
+
+/** Removes the visit and everything captured in it. */
+export async function clearVisit(): Promise<void> {
   const database = await db();
-  const tx = database.transaction(["findings", "calls"], "readwrite");
+  const tx = database.transaction(
+    ["findings", "areas", "photos", "calls", "meta"],
+    "readwrite",
+  );
   await Promise.all([
     tx.objectStore("findings").clear(),
+    tx.objectStore("areas").clear(),
+    tx.objectStore("photos").clear(),
     tx.objectStore("calls").clear(),
+    tx.objectStore("meta").delete(VISIT_KEY),
     tx.done,
   ]);
 }
