@@ -1,0 +1,95 @@
+import { InferenceSource } from "firebase/ai";
+import { getModel, onDeviceAvailability, type Route } from "./models";
+
+/** One measured model call. Every value here is observed, never estimated. */
+export interface RunRecord {
+  route: Route;
+  /** Tier that answered, as reported by the SDK. Null if the call failed. */
+  source: InferenceSource | null;
+  /** Wall-clock milliseconds around the call. */
+  ms: number;
+  /** ISO timestamp taken when the call returned. */
+  at: string;
+  /** Browser network state when the call started. */
+  online: boolean;
+  text: string | null;
+  error: string | null;
+}
+
+/**
+ * Upper bound for routes that can reach the cloud. The SDK's own timeout only
+ * covers the HTTP request, not the App Check token that precedes it, so a
+ * stalled token would otherwise leave the call pending forever.
+ */
+const CLOUD_TIMEOUT_MS = 90_000;
+
+/**
+ * Returns why a route cannot run right now, or null if it can. A blocked
+ * route makes no model call, so it must not appear in the measured log.
+ */
+export async function blocker(route: Route): Promise<string | null> {
+  if (route !== "captureOffline") return null;
+
+  const state = await onDeviceAvailability();
+  switch (state) {
+    case "available":
+      return null;
+    case "downloadable":
+    case "downloading":
+      return "The on-device model is not downloaded yet. Prepare it first, while online.";
+    case "missing":
+      return "This browser has no on-device model. Use Chrome desktop 148 or later.";
+    default:
+      return `The on-device model is not available on this device (${state}).`;
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error("Timed out waiting for the cloud (App Check or network)."));
+    }, ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+export async function run(route: Route, prompt: string): Promise<RunRecord> {
+  const online = navigator.onLine;
+  const started = performance.now();
+  const finish = (
+    fields: Pick<RunRecord, "source" | "text" | "error">,
+  ): RunRecord => ({
+    route,
+    ms: Math.round(performance.now() - started),
+    at: new Date().toISOString(),
+    online,
+    ...fields,
+  });
+
+  try {
+    const call = getModel(route).generateContent(prompt);
+    const result = await (route === "captureOffline"
+      ? call
+      : withTimeout(call, CLOUD_TIMEOUT_MS));
+    const source = result.response.inferenceSource ?? null;
+
+    // A device-only call answered by anything else is a routing fault, not a
+    // result. Surface it instead of showing the output.
+    if (route === "captureOffline" && source !== InferenceSource.ON_DEVICE) {
+      return finish({
+        source,
+        text: null,
+        error: "A device-only call was not answered on the device.",
+      });
+    }
+
+    return finish({ source, text: result.response.text(), error: null });
+  } catch (cause) {
+    return finish({
+      source: null,
+      text: null,
+      error: cause instanceof Error ? cause.message : String(cause),
+    });
+  }
+}

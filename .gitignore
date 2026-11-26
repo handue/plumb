@@ -1,0 +1,25 @@
+# Private, never committed
+private/
+handoff/
+plumb_handoff.zip
+CLAUDE.md
+BRIEF.md
+KICKOFF_PROMPT.md
+.claude/
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Build and tooling
+node_modules/
+dist/
+.firebase/
+.firebaserc
+.impeccable/
+*.log
+.DS_Store
+
+# Concept mock with placeholder numbers, kept local
+design/

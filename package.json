@@ -1,0 +1,22 @@
+{
+  "name": "plumb",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Offline-first inspection capture with on-device Gemini Nano and cloud Gemini polish, built on Firebase AI Logic hybrid inference.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "tsc --noEmit",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "firebase": "13.4.0",
+    "idb": "8.0.4"
+  },
+  "devDependencies": {
+    "typescript": "^7.0.2",
+    "vite": "^8.3.8"
+  }
+}
