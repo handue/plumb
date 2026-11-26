@@ -210,7 +210,9 @@ src/
   `VITE_PHOTO_ASSIST=true`, and only if Chrome reports image input as
   available for the on-device model, a photo can be read on the device to
   draft a note, which the inspector edits before adding. The draft is
-  labeled as suggested by Nano. Its accuracy has not been measured here.
+  labeled as suggested by Nano. It ran end to end in Chrome 158 at about
+  5 s per photo, but it has only been tried on eight synthetic drawings
+  (five categorized correctly), not on real photos, so it stays off.
 - Severity is a model's suggestion and needs an inspector's review.
 - One visit at a time, stored in this browser only. There is no account and
   no sync between devices.
