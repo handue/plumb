@@ -5,7 +5,7 @@ import "@fontsource/barlow/latin-700.css";
 import "@fontsource/barlow-condensed/latin-600.css";
 import "./app.css";
 
-import { missingConfig } from "./firebase";
+import { missingConfig, whenAppCheckBlocked } from "./firebase";
 import {
   onDeviceAvailability,
   photoAvailability,
@@ -15,7 +15,7 @@ import {
   type Route,
 } from "./ai/models";
 import { loadRemoteModel } from "./ai/remote";
-import { blocker, run } from "./ai/run";
+import { APP_CHECK_BLOCKED, blocker, run } from "./ai/run";
 import {
   extractionPrompt,
   GENERAL_AREA,
@@ -169,6 +169,19 @@ let simulated = localStorage.getItem(SIMULATE_KEY) === "1";
 /** "unknown" until Chrome has been asked, so nothing is claimed before that. */
 let availability = "unknown";
 let downloading = false;
+/**
+ * Set when the on-device model was reported ready but a call to it failed.
+ * The SDK does not fall back to the cloud in that case, so while this is set
+ * online notes are sent to the cloud route. A note's own call sets it only
+ * when the device did not answer in time; any other error may be that note's.
+ * Cleared when the device answers a call, the model state changes or the
+ * visit is cleared, so the device gets another chance.
+ */
+let deviceFailed = false;
+/** Set when the App Check script failed to load while the browser was online. */
+let cloudBlocked = false;
+/** Set while another tab keeps the store from opening. */
+let storeBlocked = false;
 /** The finding removed last, kept so the delete can be undone. */
 let lastDeleted: Finding | null = null;
 /**
@@ -309,9 +322,13 @@ function retryWhenBusy(id: string, error: string | null): void {
 }
 
 /** Turns an SDK error into something an inspector can act on. */
-function explain(error: string | null, fallback: string): string {
+function explain(error: string | null, fallback: string, cloud = false): string {
   if (!error) return fallback;
-  if (/^No answer after/.test(error)) return error;
+  if (/^No answer after/.test(error)) {
+    return cloud
+      ? `${error} If this repeats, reload the page; a blocked reCAPTCHA script stops cloud calls.`
+      : error;
+  }
   if (/app ?check/i.test(error)) {
     return ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)
       ? "App Check did not accept this browser, so the cloud refused the call. On localhost, register this browser's debug token in the Firebase console."
@@ -539,16 +556,37 @@ async function structure(id: string): Promise<void> {
   const finding = findingById(id);
   if (!finding || finding.status !== "queued" || !visit) return;
 
+  // The SDK reads the model state live on each call, so the lane, the log
+  // row and the labels must not come from an older read.
+  if (await readAvailability()) {
+    paintNetwork();
+    renderNotice();
+    warmUp();
+    // Notes that were waiting for the model can move now.
+    if (availability === "available") sync(true);
+  }
+  // Read after the wait above, so the route is chosen for the current state.
   const simulatedOffline = simulated;
   const offline = !isOnline();
   // With no connection the call must not leave the device, so it is made in
-  // device-only mode. Online, the SDK prefers the device and may fall back.
-  const route: Route = offline ? "captureOffline" : "capture";
+  // device-only mode. Online, the SDK prefers the device and falls back only
+  // when the model is not ready; after a ready model failed, the cloud is
+  // asked directly.
+  const route: Route = offline
+    ? "captureOffline"
+    : deviceFailed
+      ? "captureCloud"
+      : "capture";
 
   const blocked = configured
     ? await blocker(route)
     : "Firebase is not configured, so no model can be called.";
   if (findingById(id) !== finding) return;
+  // The connection or the demo control may have changed during that wait. A
+  // note must not leave on a route chosen for another state, so choose again.
+  if (!isOnline() !== offline || simulated !== simulatedOffline) {
+    return structure(id);
+  }
   if (blocked) {
     finding.captureError = blocked;
     await saveFinding(finding);
@@ -568,10 +606,12 @@ async function structure(id: string): Promise<void> {
   const started = generation;
   // On the device the fields are shown as the model writes them. A call the
   // cloud will answer is not streamed: that was slower and less reliable.
-  const onDevice = route === "captureOffline" || availability === "available";
+  const onDevice =
+    route === "captureOffline" || (route === "capture" && availability === "available");
   structuringOn.set(id, onDevice ? "on_device" : "in_cloud");
   renderDock();
-  const record = await run(
+  let answeredBy = route;
+  let record = await run(
     route,
     prompt,
     onDevice
@@ -587,6 +627,39 @@ async function structure(id: string): Promise<void> {
   if (started !== generation) return;
   // The call happened, so it is logged even if the finding was deleted.
   await logCall(finding.seq, "structure", route, prompt, record, simulatedOffline);
+  // The device answered, so it is trusted again for online notes.
+  if (deviceFailed && record.source === "on_device" && record.text !== null) {
+    deviceFailed = false;
+    paintNetwork();
+  }
+
+  // The model was reported ready, so that failed call was the device's, and
+  // the SDK does not try the cloud after it. Ask the cloud once, as a second
+  // call with its own log row, unless the app is or says it is offline.
+  if (route === "capture" && onDevice && record.text === null) {
+    if (/^No answer after/.test(record.error ?? "")) {
+      deviceFailed = true;
+      paintNetwork();
+    }
+    const cloudBlock = await blocker("captureCloud");
+    if (
+      cloudBlock === null &&
+      isOnline() &&
+      started === generation &&
+      findingById(id) === finding
+    ) {
+      answeredBy = "captureCloud";
+      structuringOn.set(id, "in_cloud");
+      render();
+      // Online was checked just above, so this call starts with the demo
+      // control off, whatever it is when the answer returns.
+      record = await run(answeredBy, prompt);
+      structuringOn.delete(id);
+      if (started !== generation) return;
+      await logCall(finding.seq, "structure", answeredBy, prompt, record, false);
+    }
+  }
+
   const current = findingById(id);
   if (current !== finding) {
     render();
@@ -595,7 +668,11 @@ async function structure(id: string): Promise<void> {
 
   if (record.text === null) {
     current.status = "queued";
-    current.captureError = explain(record.error, "The model call failed.");
+    current.captureError = explain(
+      record.error,
+      "The model call failed.",
+      answeredBy === "captureCloud" || (answeredBy === "capture" && !onDevice),
+    );
     retryWhenBusy(id, record.error);
   } else {
     try {
@@ -640,6 +717,18 @@ async function polish(id: string): Promise<void> {
     return;
   }
   if (!isOnline() || !configured) return;
+
+  // No call is made while the cloud cannot be reached, so nothing is logged.
+  const blocked = await blocker("polish");
+  if (findingById(id) !== finding || finding.status !== "draft" || !isOnline()) {
+    return;
+  }
+  if (blocked) {
+    finding.polishError = blocked;
+    await saveFinding(finding);
+    render();
+    return;
+  }
 
   const simulatedOffline = simulated;
   finding.status = "polishing";
@@ -686,7 +775,7 @@ async function polish(id: string): Promise<void> {
     return;
   }
   if (record.text === null) {
-    current.polishError = explain(record.error, "The cloud call failed.");
+    current.polishError = explain(record.error, "The cloud call failed.", true);
     retryWhenBusy(id, record.error);
   } else {
     try {
@@ -761,6 +850,9 @@ function warmUp(): void {
     if (startedIn !== generation) return;
     await logCall(0, "warmup", "captureOffline", prompt, record, simulatedOffline);
     if (record.error) {
+      // Makes the next sentence true: online notes now go to the cloud route.
+      deviceFailed = true;
+      paintNetwork();
       showCaptureStatus(
         "The on-device model did not answer. Notes are saved; while online they are structured in the cloud.",
       );
@@ -1217,8 +1309,9 @@ themeButton.addEventListener("click", () => {
 function describeNetwork(): string {
   if (isOnline()) {
     if (!configured) return "Online: cloud not configured";
-    // Online, notes are still structured on the device when it has the model.
-    return availability === "available"
+    // Online, notes are still structured on the device when it has the model
+    // and the model answers.
+    return availability === "available" && !deviceFailed
       ? "Online: Nano on device, Gemini in the cloud"
       : "Online: Gemini in the cloud";
   }
@@ -1289,20 +1382,52 @@ simulateSwitch.addEventListener("change", () => {
   localStorage.setItem(SIMULATE_KEY, simulated ? "1" : "0");
   applyNetwork(false);
 });
-window.addEventListener("online", () => applyNetwork(false));
-window.addEventListener("offline", () => applyNetwork(false));
+// The model state is a local read, so it also works with no connection.
+window.addEventListener("online", () => {
+  applyNetwork(false);
+  void refreshAvailability();
+});
+window.addEventListener("offline", () => {
+  applyNetwork(false);
+  void refreshAvailability();
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible") void refreshAvailability();
+});
 
 // --------------------------------------------------------- on-device notice
 
+/** Reads the model state from Chrome. Resolves to true if it changed. */
+async function readAvailability(): Promise<boolean> {
+  const live = await onDeviceAvailability();
+  if (live === availability) return false;
+  availability = live;
+  deviceFailed = false;
+  return true;
+}
+
+let recheckTimer: ReturnType<typeof setTimeout> | undefined;
+const RECHECK_MS = 5000;
+
 async function refreshAvailability(): Promise<void> {
-  availability = await onDeviceAvailability();
+  const changed = await readAvailability();
   paintNetwork();
   renderNotice();
   warmUp();
+  // Notes that were waiting for the model can move now, after the warm-up.
+  if (changed && availability === "available") sync(true);
+  // A download started elsewhere (another tab, or before a reload) reports no
+  // progress here, so ask again until Chrome says it is over.
+  clearTimeout(recheckTimer);
+  if (availability === "downloading" && !downloading) {
+    recheckTimer = setTimeout(() => void refreshAvailability(), RECHECK_MS);
+  }
   await refreshAssist();
 }
 
 function renderNotice(): void {
+  // Nothing else is on screen yet, so that message must stay.
+  if (storeBlocked) return;
   let text = "";
   let action = "";
   let note = "";
@@ -1322,6 +1447,7 @@ function renderNotice(): void {
       "The on-device model is not downloaded yet. Download it once, while you have a connection, to capture findings offline.";
     action = "Download model";
   }
+  if (text === "" && cloudBlocked && configured) text = APP_CHECK_BLOCKED;
 
   notice.hidden = text === "";
   noticeText.textContent = text;
@@ -1334,12 +1460,45 @@ function renderNotice(): void {
   if (showingDefault) showCaptureStatus();
 }
 
+let downloadWatchdog: ReturnType<typeof setTimeout> | undefined;
+const DOWNLOAD_STALL_MS = 60_000;
+/** Last progress Chrome reported for the download in this page, if any. */
+let downloadFraction: number | null = null;
+
+/**
+ * The download promise only settles when Chrome is done, which may be never
+ * with no real connection. After a minute without progress the button comes
+ * back; a second click joins the same download in the SDK.
+ */
+function watchDownload(): void {
+  clearTimeout(downloadWatchdog);
+  downloadWatchdog = setTimeout(() => {
+    if (!downloading) return;
+    // Fully downloaded: Chrome is loading the model and the promise settles.
+    if (downloadFraction !== null && downloadFraction >= 1) return;
+    downloading = false;
+    showCaptureStatus(
+      downloadFraction === null
+        ? "The download has not started. Check the connection and try again."
+        : `The download has stalled at ${Math.round(downloadFraction * 100)}%. Check the connection and try again.`,
+    );
+    void refreshAvailability();
+  }, DOWNLOAD_STALL_MS);
+}
+
 noticeAction.addEventListener("click", () => {
   if (downloading) return;
   downloading = true;
+  downloadFraction = null;
   noticeText.textContent = "Starting the on-device model download.";
   noticeAction.hidden = true;
+  watchDownload();
   void prepareOnDeviceModel((fraction) => {
+    // Progress after the watchdog gave up means the download is alive.
+    downloading = true;
+    downloadFraction = fraction;
+    noticeAction.hidden = true;
+    watchDownload();
     noticeText.textContent = `Downloading the on-device model: ${Math.round(fraction * 100)}%. You can keep capturing.`;
   })
     .then(
@@ -1351,10 +1510,18 @@ noticeAction.addEventListener("click", () => {
       },
     )
     .then(async () => {
+      clearTimeout(downloadWatchdog);
       downloading = false;
       await refreshAvailability();
       sync(true);
     });
+});
+
+whenAppCheckBlocked(() => {
+  // Opened with no connection is the other case, handled by a reload below.
+  if (!navigator.onLine) return;
+  cloudBlocked = true;
+  renderNotice();
 });
 
 // ---------------------------------------------------------------- rendering
@@ -1988,6 +2155,7 @@ clearDialog.addEventListener("close", () => {
   void (async () => {
     // Reset memory first, so a call that returns during the delete is dropped.
     generation += 1;
+    deviceFailed = false;
     visit = null;
     findings = [];
     areas = [];
@@ -2091,6 +2259,7 @@ window.addEventListener("afterprint", () => {
 window.addEventListener("hashchange", renderView);
 
 onStoreBlocked(() => {
+  storeBlocked = true;
   // No view is shown yet at this point, so the notice bar carries it.
   noticeText.textContent =
     "Plumb is open in another tab with an older version. Close that tab, then reload this one.";
@@ -2122,7 +2291,9 @@ async function start(): Promise<void> {
       }
       photos.set(photo.findingId, [...photosOf(photo.findingId), photo]);
     }
+    storeBlocked = false;
   } catch (cause) {
+    storeBlocked = false;
     setupStatus.textContent = `Saved findings could not be loaded: ${cause instanceof Error ? cause.message : String(cause)}`;
   }
 

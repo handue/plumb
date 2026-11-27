@@ -78,11 +78,17 @@ export const PHOTO_ON_DEVICE: OnDeviceParams = {
   promptOptions: { responseConstraint: PHOTO_SCHEMA },
 };
 
-export type Route = "capture" | "captureOffline" | "polish" | "photo";
+export type Route =
+  | "capture"
+  | "captureCloud"
+  | "captureOffline"
+  | "polish"
+  | "photo";
 
 /** Firebase AI Logic inference mode behind each route, as shown in the log. */
 export const ROUTE_MODES: Record<Route, string> = {
   capture: "PREFER_ON_DEVICE",
+  captureCloud: "ONLY_IN_CLOUD",
   captureOffline: "ONLY_ON_DEVICE",
   polish: "ONLY_IN_CLOUD",
   photo: "ONLY_ON_DEVICE",
@@ -133,6 +139,9 @@ const cache = new Map<Route, GenerativeModel>();
  *
  * - capture: PREFER_ON_DEVICE. Gemini Nano when the browser has it, cloud
  *   otherwise, so capture still works on machines without the model.
+ * - captureCloud: ONLY_IN_CLOUD. The same job on the cloud model, used while
+ *   online after the on-device model was reported ready but failed. The SDK
+ *   does not fall back by itself in that case.
  * - captureOffline: ONLY_ON_DEVICE. Chosen explicitly by the caller when the
  *   note must stay on the device. Never reaches the cloud.
  * - polish: ONLY_IN_CLOUD. Severity is a judgment call that stays with the
@@ -150,6 +159,12 @@ export function getModel(route: Route): GenerativeModel {
       model = getGenerativeModel(ai, {
         mode: InferenceMode.PREFER_ON_DEVICE,
         onDeviceParams: CAPTURE_ON_DEVICE,
+        inCloudParams: captureCloud,
+      });
+      break;
+    case "captureCloud":
+      model = getGenerativeModel(ai, {
+        mode: InferenceMode.ONLY_IN_CLOUD,
         inCloudParams: captureCloud,
       });
       break;

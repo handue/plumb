@@ -20,6 +20,10 @@ export async function loadRemoteModel(fallback: string): Promise<void> {
   try {
     const remote = getRemoteConfig(getFirebase().app);
     remote.defaultConfig = { [POLISH_MODEL_KEY]: fallback };
+    // The SDK defaults are 12 hours and 60 seconds: too slow for a model
+    // switch to reach a returning browser, and too long to hold a polish.
+    remote.settings.minimumFetchIntervalMillis = 5 * 60 * 1000;
+    remote.settings.fetchTimeoutMillis = 10_000;
     await fetchAndActivate(remote);
     const value = getString(remote, POLISH_MODEL_KEY).trim();
     // A model id, nothing else: this string goes into a request path.

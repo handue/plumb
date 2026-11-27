@@ -11,8 +11,24 @@ tiers run through
 [Firebase AI Logic](https://firebase.google.com/docs/ai-logic/hybrid) hybrid
 inference.
 
-**Try it:** https://plumb-2ae89.web.app (Chrome desktop). On a browser with
-no on-device model, the same calls are answered in the cloud.
+**Try it:** https://plumb-2ae89.web.app (Chrome desktop, no login).
+
+## Testing the hosted demo
+
+1. Open https://plumb-2ae89.web.app once while online, in Chrome desktop 148
+   or later (see [Requirements](#requirements) for hardware and disk space).
+   This first visit also caches the app, so it opens later without a network.
+2. If a banner says the on-device model is not downloaded yet, click
+   **Download model** and wait for the percentage to finish. This is a
+   one-time download managed by Chrome.
+3. Turn on **Simulate offline** (or disconnect) and add a note. It is
+   structured on the device, and the routing log shows "On device".
+4. Turn the switch off (or reconnect). The cloud model writes the report
+   sentence and severity. Open **Report** to see the result.
+
+Without the on-device model (other browsers, unsupported hardware, or before
+the download finishes), notes are structured in the cloud while online. While
+offline they are saved and structured on reconnect.
 
 ## What it does
 
@@ -127,7 +143,8 @@ Three things moved these numbers during tuning:
   (2 ft became 75.7 cm in the test set, and 2 m became 2000 cm in the app).
   Size accuracy went from 97% to 100%.
 - The JSON schema is left out of the model's input. The output is still
-  constrained by it, and latency dropped by about a third.
+  constrained by it, and the prompt is shorter. Across all three changes,
+  median latency went from about 3.6 s to about 2.7 s.
 
 The area misses that remain are places named only as part of the item ("bar
 ice machine", "balcony railing"), which the model files under General. That
@@ -149,6 +166,10 @@ models had a free quota of 20 requests a day when this was tested. Set
   On-device inference needs about 22 GB of free disk space and either a GPU
   with more than 4 GB of VRAM or 16 GB of RAM with 4 or more cores. See
   Chrome's [built-in AI requirements](https://developer.chrome.com/docs/ai/get-started).
+- On-device inference uses Chrome's built-in Gemini Nano through the Prompt
+  API. The hackathon FAQ says to enable "Gemma 4 for Built-in AI" in
+  `chrome://flags` to get Gemini Nano 4; `chrome://on-device-internals` shows
+  whether the model is downloaded.
 - Node.js 22.12 or later.
 - A Firebase project with Firebase AI Logic enabled (Gemini Developer API)
   and App Check.
@@ -184,6 +205,11 @@ models had a free quota of 20 requests a day when this was tested. Set
 
 5. If the app says the on-device model is not downloaded yet, click
    **Download model** once while online.
+6. Optional: to change the cloud model for the polish step without a
+   rebuild, open Remote Config in the Firebase console, add a string
+   parameter `polish_model` (for example `gemini-3.5-flash-lite`) and publish.
+   If the parameter is absent or the fetch fails, the build default
+   (`VITE_POLISH_MODEL`) is used.
 
 To try the offline app shell locally, run `npm run build` and
 `npm run preview`. The service worker is only registered in production
@@ -232,8 +258,9 @@ firebase.json     Hosting config
 - English input only.
 - Chrome desktop only. Other browsers and mobile Chrome have no on-device
   model, so only the cloud path works there.
-- The first use downloads the on-device model, which needs an unmetered
-  connection.
+- The on-device model is not downloaded automatically. Click
+  **Download model** once while online; Chrome then downloads it, which needs
+  an unmetered connection and enough free disk space.
 - The site map is schematic. Tiles are areas in the order they were created,
   not a floor plan, and a pin marks which area a finding belongs to, not
   where in the area it is.

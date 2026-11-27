@@ -27,6 +27,7 @@ const runButtons = [
 
 const ROUTE_LABELS: Record<Route, string> = {
   capture: "Structure, device preferred",
+  captureCloud: "Structure, cloud only",
   captureOffline: "Structure, device only",
   polish: "Polish in cloud",
   photo: "Photo assist, device only",

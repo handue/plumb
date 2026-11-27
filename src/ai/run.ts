@@ -1,4 +1,5 @@
 import { InferenceSource, type Part } from "firebase/ai";
+import { appCheckBlocked, appCheckMissedOffline } from "../firebase";
 import {
   getModel,
   onDeviceAvailability,
@@ -32,12 +33,30 @@ export interface RunRecord {
 const CLOUD_TIMEOUT_MS = 90_000;
 const DEVICE_TIMEOUT_MS = 120_000;
 
+export const APP_CHECK_BLOCKED =
+  "Cloud steps cannot run: the App Check reCAPTCHA script (www.google.com/recaptcha) did not load. Allow it and reload the page.";
+
+/** The page was opened with no connection, so nothing blocked the script. */
+const APP_CHECK_NEEDS_RELOAD =
+  "Cloud steps are waiting: the App Check script could not load with no connection. Reload the page to run them.";
+
 /**
  * Returns why a route cannot run right now, or null if it can. A blocked
  * route makes no model call, so it must not appear in the measured log.
  */
 export async function blocker(route: Route): Promise<string | null> {
-  if (!DEVICE_ONLY.includes(route)) return null;
+  if (!DEVICE_ONLY.includes(route)) {
+    // Without the App Check script a cloud call can only wait for its limit.
+    // "capture" is still answered on the device when the model is ready.
+    if (
+      appCheckBlocked() &&
+      navigator.onLine &&
+      (route !== "capture" || (await onDeviceAvailability()) !== "available")
+    ) {
+      return appCheckMissedOffline() ? APP_CHECK_NEEDS_RELOAD : APP_CHECK_BLOCKED;
+    }
+    return null;
+  }
 
   const state =
     route === "photo" ? await photoAvailability() : await onDeviceAvailability();

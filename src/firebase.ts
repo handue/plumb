@@ -48,6 +48,33 @@ function isLocalHost(): boolean {
   return host === "localhost" || host === "127.0.0.1" || host === "[::1]";
 }
 
+let appCheckScriptFailed = false;
+let appCheckFailedOffline = false;
+let onAppCheckBlocked: (() => void) | null = null;
+
+/**
+ * True once the reCAPTCHA script that App Check needs has failed to load. The
+ * SDK does not watch for that, so its token request, and every cloud call
+ * behind it, would wait forever.
+ */
+export function appCheckBlocked(): boolean {
+  return appCheckScriptFailed;
+}
+
+/**
+ * True if that script failed while the browser had no connection: nothing
+ * blocked it, and a reload with a connection loads it.
+ */
+export function appCheckMissedOffline(): boolean {
+  return appCheckFailedOffline;
+}
+
+/** Calls `listener` when the App Check script fails to load, or now if it has. */
+export function whenAppCheckBlocked(listener: () => void): void {
+  onAppCheckBlocked = listener;
+  if (appCheckScriptFailed) listener();
+}
+
 /**
  * App Check protects the cloud path only. Firebase AI Logic attaches a token
  * to cloud requests; on-device requests never leave the browser and need none.
@@ -80,6 +107,15 @@ function setUpAppCheck(app: FirebaseApp): AppCheckMode {
       provider: new ReCaptchaEnterpriseProvider(siteKey),
       isTokenAutoRefreshEnabled: true,
     });
+    // The SDK has just added the script, with no error handler of its own.
+    // A blocked or failed load fires `error`; a slow one does not.
+    document
+      .querySelector('script[src*="recaptcha/enterprise.js"]')
+      ?.addEventListener("error", () => {
+        appCheckScriptFailed = true;
+        appCheckFailedOffline = !navigator.onLine;
+        onAppCheckBlocked?.();
+      });
     return "recaptcha-enterprise";
   }
 
