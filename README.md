@@ -11,6 +11,9 @@ tiers run through
 [Firebase AI Logic](https://firebase.google.com/docs/ai-logic/hybrid) hybrid
 inference.
 
+**Try it:** https://plumb-2ae89.web.app (Chrome desktop). On a browser with
+no on-device model, the same calls are answered in the cloud.
+
 ## What it does
 
 1. **Start a visit.** Name the site and pick a visit type: rental move-out,
